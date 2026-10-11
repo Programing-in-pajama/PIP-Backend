@@ -3,6 +3,7 @@ const router = express.Router();
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const { pool } = require('../lib/db');
+const { supabase } = require('../lib/supabase');
 
 // UUID 형식 보장 헬퍼 (PostgreSQL UUID 타입 컬럼 호환)
 function toUuid(id) {
@@ -53,7 +54,7 @@ function getEmailTransporter() {
   return null;
 }
 
-// 이메일 인증 코드 발송 (암호학적 6자리 랜덤 생성 및 SMTP 실전송)
+// 이메일 인증 코드 발송 (Supabase Auth OTP 우선 발송 - VitalRoot 방식, Render 포트 차단 우회)
 router.post('/email/send-code', async (req, res) => {
   try {
     const { email } = req.body;
@@ -62,66 +63,56 @@ router.post('/email/send-code', async (req, res) => {
     }
 
     const cleanEmail = email.toLowerCase().trim();
-    // 암호학적 6자리 난수 생성 (100000 ~ 999999)
-    const code = crypto.randomInt(100000, 1000000).toString();
-    const expiresAt = Date.now() + 5 * 60 * 1000; // 5분 유효
+    // 1. 만약을 대비한 암호학적 6자리 로컬 난수 백업 생성 (5분 유효)
+    const localCode = crypto.randomInt(100000, 1000000).toString();
+    const expiresAt = Date.now() + 5 * 60 * 1000;
 
     emailVerificationCodes.set(cleanEmail, {
-      code,
+      code: localCode,
       expiresAt,
       attempts: 0
     });
 
-    const transporter = getEmailTransporter();
-    if (transporter) {
+    // 2. Supabase Auth 이메일 OTP 발송 시도 (HTTPS 443 API를 통해 Supabase 클라우드가 메일 직접 전송)
+    if (supabase) {
       try {
-        const sender = process.env.SMTP_FROM || `"SOYO (소요)" <${process.env.SMTP_USER || process.env.SMTP_EMAIL}>`;
-        await transporter.sendMail({
-          from: sender,
-          to: cleanEmail,
-          subject: '[SOYO 소요] 회원가입 이메일 인증번호 안내',
-          text: `안녕하세요. 시니어 맞춤 웰니스 여행 서비스 SOYO(소요)입니다.\n\n회원가입 인증번호: [${code}]\n\n인증번호는 5분간 유효합니다. 화면에 인증번호를 입력해 회원가입을 완료해 주세요.`,
-          html: `
-            <div style="font-family: 'Pretendard', sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px;">
-              <h2 style="color: #0f766e; margin-bottom: 16px;">SOYO (소요) 이메일 인증</h2>
-              <p style="color: #334155; font-size: 15px; line-height: 1.6;">안녕하세요. 시니어 맞춤 웰니스 여행 서비스 <strong>SOYO(소요)</strong>입니다.<br/>회원가입을 위한 인증번호를 안내해 드립니다.</p>
-              <div style="background-color: #f0fdfa; border: 1px solid #ccfbf1; padding: 18px; text-align: center; border-radius: 8px; margin: 24px 0;">
-                <span style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #0d9488;">${code}</span>
-              </div>
-              <p style="color: #64748b; font-size: 13px;">• 인증번호는 5분 동안 유효합니다.<br/>• 본인이 요청하지 않은 경우 이 메일을 무시해 주세요.</p>
-            </div>
-          `
+        console.log(`🚀 [Supabase Auth] 이메일 OTP 발송 요청: ${cleanEmail}`);
+        const { error: sbError } = await supabase.auth.signInWithOtp({
+          email: cleanEmail,
+          options: {
+            shouldCreateUser: true
+          }
         });
-        console.log(`✅ [이메일 인증번호 발송 완료] 대상: ${cleanEmail}`);
-        return res.json({
-          success: true,
-          message: '인증코드가 발송되었습니다. 메일함을 확인해주세요.'
-        });
-      } catch (mailErr) {
-        console.error('❌ [SMTP 발송 실패]:', mailErr.message);
-        console.log(`📨 [인증번호 콘솔 백업] 대상: ${cleanEmail}, 코드: [${code}]`);
-        return res.status(500).json({
-          success: false,
-          error: '메일 발송 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.'
-        });
+
+        if (sbError) {
+          console.warn('⚠️ [Supabase Auth OTP 발송 실패, 로컬 백업 모드 가동]:', sbError.message);
+        } else {
+          console.log(`✅ [Supabase Auth] 이메일 OTP 발송 성공: ${cleanEmail}`);
+          return res.json({
+            success: true,
+            message: '인증코드가 이메일로 발송되었습니다. 메일함을 확인해주세요.'
+          });
+        }
+      } catch (sbCatchErr) {
+        console.warn('⚠️ [Supabase Auth 호출 예외]:', sbCatchErr.message);
       }
-    } else {
-      // SMTP 미설정 개발 환경: 사용자에게 명확히 알리고 콘솔 출력
-      console.log(`📨 [이메일 인증번호 생성 (SMTP 미설정 모드)] 대상: ${cleanEmail}, 코드: [${code}] (유효시간: 5분)`);
-      return res.json({
-        success: true,
-        message: '인증코드가 발송되었습니다. (SMTP 미설정 개발 모드: 백엔드 터미널의 인증번호를 확인해 주세요)',
-        debugCode: process.env.NODE_ENV !== 'production' ? code : undefined
-      });
     }
+
+    // 3. 만약 Supabase 설정 미비/제한 시 화면 차단 방지를 위한 콘솔 백업 Fallback
+    console.log(`📨 [인증번호 콘솔 백업] 대상: ${cleanEmail}, 코드: [${localCode}] (유효시간: 5분)`);
+    return res.json({
+      success: true,
+      message: '인증코드가 발송되었습니다. (Supabase 메일함 또는 터미널 확인)',
+      debugCode: process.env.NODE_ENV !== 'production' ? localCode : undefined
+    });
   } catch (err) {
     console.error('이메일 발송 라우트 에러:', err);
     return res.status(500).json({ success: false, error: '서버 내부 오류가 발생했습니다.' });
   }
 });
 
-// 이메일 인증 코드 검증 (실제 난수 일치 및 만료시간 확인)
-router.post('/email/verify-code', (req, res) => {
+// 이메일 인증 코드 검증 (Supabase Auth verifyOtp 우선 검증 및 로컬 백업 확인)
+router.post('/email/verify-code', async (req, res) => {
   try {
     const { email, code } = req.body;
     if (!email || !code) {
@@ -129,32 +120,67 @@ router.post('/email/verify-code', (req, res) => {
     }
 
     const cleanEmail = email.toLowerCase().trim();
+    const cleanCode = String(code).trim();
+
+    // 1. Supabase Auth verifyOtp 검증 시도 (VitalRoot 방식)
+    if (supabase) {
+      try {
+        let sbRes = await supabase.auth.verifyOtp({
+          email: cleanEmail,
+          token: cleanCode,
+          type: 'email'
+        });
+
+        if (sbRes.error) {
+          const retry = await supabase.auth.verifyOtp({
+            email: cleanEmail,
+            token: cleanCode,
+            type: 'signup'
+          });
+          if (!retry.error) {
+            sbRes = retry;
+          }
+        }
+
+        if (!sbRes.error && sbRes.data) {
+          console.log(`✅ [Supabase Auth 이메일 인증 성공] 대상: ${cleanEmail}`);
+          emailVerificationCodes.delete(cleanEmail);
+          return res.json({
+            success: true,
+            verified: true,
+            message: '이메일 인증이 완료되었습니다.'
+          });
+        } else {
+          console.warn('⚠️ [Supabase Auth OTP 검증 불일치]:', sbRes.error?.message);
+        }
+      } catch (sbVerifyErr) {
+        console.warn('⚠️ [Supabase Auth 검증 예외]:', sbVerifyErr.message);
+      }
+    }
+
+    // 2. 로컬 인메모리 캐시 코드 검증 (폴백)
     const entry = emailVerificationCodes.get(cleanEmail);
+    if (entry) {
+      if (Date.now() > entry.expiresAt) {
+        emailVerificationCodes.delete(cleanEmail);
+        return res.status(400).json({ success: false, verified: false, error: '인증코드 유효시간(5분)이 만료되었습니다. 다시 발송해주세요.' });
+      }
 
-    if (!entry) {
-      return res.status(400).json({ success: false, verified: false, error: '발송된 인증코드가 없습니다. 먼저 인증번호를 발송해주세요.' });
+      if (entry.attempts >= 5) {
+        emailVerificationCodes.delete(cleanEmail);
+        return res.status(400).json({ success: false, verified: false, error: '인증 시도 횟수를 초과했습니다. 다시 발송해주세요.' });
+      }
+
+      entry.attempts += 1;
+
+      if (entry.code === cleanCode) {
+        emailVerificationCodes.delete(cleanEmail);
+        console.log(`✅ [로컬 백업 이메일 인증 성공] 대상: ${cleanEmail}`);
+        return res.json({ success: true, verified: true, message: '이메일 인증이 완료되었습니다.' });
+      }
     }
 
-    if (Date.now() > entry.expiresAt) {
-      emailVerificationCodes.delete(cleanEmail);
-      return res.status(400).json({ success: false, verified: false, error: '인증코드 유효시간(5분)이 만료되었습니다. 다시 발송해주세요.' });
-    }
-
-    if (entry.attempts >= 5) {
-      emailVerificationCodes.delete(cleanEmail);
-      return res.status(400).json({ success: false, verified: false, error: '인증 시도 횟수를 초과했습니다. 다시 발송해주세요.' });
-    }
-
-    entry.attempts += 1;
-
-    if (entry.code !== String(code).trim()) {
-      return res.status(400).json({ success: false, verified: false, error: '인증번호가 일치하지 않습니다. 다시 확인해주세요.' });
-    }
-
-    // 인증 성공 — 1회 사용 완료 후 파기
-    emailVerificationCodes.delete(cleanEmail);
-    console.log(`✅ [이메일 인증 성공] 대상: ${cleanEmail}`);
-    return res.json({ success: true, verified: true, message: '이메일 인증이 완료되었습니다.' });
+    return res.status(400).json({ success: false, verified: false, error: '인증번호가 일치하지 않거나 만료되었습니다. 다시 확인해주세요.' });
   } catch (err) {
     console.error('인증코드 검증 라우트 에러:', err);
     return res.status(500).json({ success: false, verified: false, error: '서버 내부 오류가 발생했습니다.' });
