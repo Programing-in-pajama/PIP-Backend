@@ -8,14 +8,14 @@
 ## 🚀 1단계: 인증 및 건강 프로필 연동 (현재 작업 대상)
 
 ### 1.1 이메일 인증 시스템 (`SignupFlow - Step 1`)
-- [ ] `POST /api/auth/email/send-code`
+- [x] `POST /api/auth/email/send-code`
   - 요청: `{ "email": "user@example.com" }`
-  - 로직: 6자리 난수 인증코드 생성 및 메일 발송 (Nodemailer or Supabase Auth OTP or AWS SES)
-  - 응답: `{ "success": true, "message": "인증코드가 발송되었습니다." }`
-- [ ] `POST /api/auth/email/verify-code`
+  - 로직: Supabase Auth 이메일 OTP 발송 (VitalRoot 아키텍처 연동) 및 콘솔 백업 Fallback
+  - 응답: `{ "success": true, "message": "인증코드가 이메일로 발송되었습니다." }`
+- [x] `POST /api/auth/email/verify-code`
   - 요청: `{ "email": "user@example.com", "code": "123456" }`
-  - 로직: 발송된 인증코드 일치 여부 및 유효시간(3~5분) 검증
-  - 응답: `{ "verified": true }`
+  - 로직: Supabase Auth verifyOtp 검증 및 로컬 백업 확인 (유효시간 5분)
+  - 응답: `{ "success": true, "verified": true }`
 
 ### 1.2 회원가입 및 프로필 저장 (`SignupFlow - Step 2`)
 - [ ] `POST /api/auth/signup`
