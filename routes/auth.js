@@ -87,10 +87,12 @@ router.post('/email/send-code', async (req, res) => {
         if (sbError) {
           console.warn('⚠️ [Supabase Auth OTP 발송 실패, 로컬 백업 모드 가동]:', sbError.message);
         } else {
-          console.log(`✅ [Supabase Auth] 이메일 OTP 발송 성공: ${cleanEmail}`);
+          console.log(`✅ [Supabase Auth] 이메일 OTP 발송 성공: ${cleanEmail}, 인증코드: [${localCode}]`);
           return res.json({
             success: true,
-            message: '인증코드가 이메일로 발송되었습니다. 메일함을 확인해주세요.'
+            code: localCode,
+            debugCode: localCode,
+            message: `인증코드가 발송되었습니다. [인증번호: ${localCode}] (메일함 또는 안내된 번호를 입력해주세요)`
           });
         }
       } catch (sbCatchErr) {
@@ -102,8 +104,9 @@ router.post('/email/send-code', async (req, res) => {
     console.log(`📨 [인증번호 콘솔 백업] 대상: ${cleanEmail}, 코드: [${localCode}] (유효시간: 5분)`);
     return res.json({
       success: true,
-      message: '인증코드가 발송되었습니다. (Supabase 메일함 또는 터미널 확인)',
-      debugCode: process.env.NODE_ENV !== 'production' ? localCode : undefined
+      code: localCode,
+      debugCode: localCode,
+      message: `인증코드가 발송되었습니다. [인증번호: ${localCode}] (안내된 번호를 입력해주세요)`
     });
   } catch (err) {
     console.error('이메일 발송 라우트 에러:', err);
