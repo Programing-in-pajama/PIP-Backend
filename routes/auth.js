@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const { pool } = require('../lib/db');
 const { supabase } = require('../lib/supabase');
+const jwt = require('../lib/jwt');
 
 // UUID 형식 보장 헬퍼 (PostgreSQL UUID 타입 컬럼 호환)
 function toUuid(id) {
@@ -363,18 +364,198 @@ router.get('/profile/:userId', async (req, res) => {
   }
 });
 
-// 네이버 소셜 로그인 연동 핸들러
+// 네이버 소셜 로그인 연동 핸들러 (OAuth 2.0 Authorization Code Grant)
 router.post('/naver', async (req, res) => {
   try {
     const { code, state } = req.body;
-    console.log('📌 [네이버 소셜 로그인 요청 수신]', { code, state });
+
+    // 1. 필수 파라미터 유효성 검증
+    if (!code || !state) {
+      return res.status(400).json({
+        success: false,
+        error: '인가 코드(code)와 상태 토큰(state)이 모두 필요합니다.'
+      });
+    }
+
+    const clientId = process.env.NAVER_CLIENT_ID;
+    const clientSecret = process.env.NAVER_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      return res.status(500).json({
+        success: false,
+        error: '서버에 네이버 OAuth 설정(NAVER_CLIENT_ID / NAVER_CLIENT_SECRET)이 누락되었습니다.'
+      });
+    }
+
+    // 2. 네이버 토큰 서버로 접근 토큰(Access Token) 발급 요청
+    const tokenUrl = `https://nid.naver.com/oauth2.0/token?grant_type=authorization_code&client_id=${clientId}&client_secret=${clientSecret}&code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
+
+    const tokenRes = await fetch(tokenUrl, { method: 'POST' });
+    const tokenData = await tokenRes.json();
+
+    if (tokenData.error) {
+      return res.status(400).json({
+        success: false,
+        error: `네이버 토큰 발급 실패: ${tokenData.error_description || tokenData.error}`
+      });
+    }
+
+    const naverAccessToken = tokenData.access_token;
+    if (!naverAccessToken) {
+      return res.status(400).json({
+        success: false,
+        error: '네이버 액세스 토큰을 수신하지 못했습니다.'
+      });
+    }
+
+    // 3. 네이버 회원 프로필 API 호출
+    const profileRes = await fetch('https://openapi.naver.com/v1/nid/me', {
+      headers: {
+        Authorization: `Bearer ${naverAccessToken}`
+      }
+    });
+    const profileData = await profileRes.json();
+
+    if (profileData.resultcode !== '00' || !profileData.response) {
+      return res.status(400).json({
+        success: false,
+        error: `네이버 프로필 조회 실패: ${profileData.message || '알 수 없는 오류'}`
+      });
+    }
+
+    const naverUser = profileData.response;
+    // naverUser 필드: id, email, name, nickname, birthday, birthyear, gender, mobile 등
+    const providerId = String(naverUser.id);
+    const email = naverUser.email || `${providerId}@naver.me`;
+    const userName = naverUser.name || naverUser.nickname || '소요 여행자';
+
+    // 생년월일 및 나이 계산
+    let birthDate = '1970-01-01';
+    let calculatedAge = 50;
+    if (naverUser.birthyear && naverUser.birthday) {
+      birthDate = `${naverUser.birthyear}-${naverUser.birthday}`;
+      const year = parseInt(naverUser.birthyear, 10);
+      if (!isNaN(year)) {
+        calculatedAge = Math.max(0, new Date().getFullYear() - year);
+      }
+    } else if (naverUser.birthyear) {
+      birthDate = `${naverUser.birthyear}-01-01`;
+      const year = parseInt(naverUser.birthyear, 10);
+      if (!isNaN(year)) {
+        calculatedAge = Math.max(0, new Date().getFullYear() - year);
+      }
+    }
+
+    // 네이버 유저 고유 ID를 기반으로 deterministic UUID 생성
+    const userUuid = toUuid(`naver_${providerId}`);
+
+    let isNewUser = false;
+    let finalUser = {
+      id: userUuid,
+      userName,
+      email,
+      birthDate,
+      age: calculatedAge,
+      provider: 'naver'
+    };
+
+    // 4. DB 조회 및 자동 가입 / 로그인 분기 처리
+    if (process.env.DATABASE_URL) {
+      try {
+        // 기존 회원 여부 확인 (id 또는 provider + provider_id)
+        const checkQuery = `
+          SELECT * FROM user_profiles
+          WHERE id = $1 OR (provider = 'naver' AND provider_id = $2)
+          LIMIT 1;
+        `;
+        const checkResult = await pool.query(checkQuery, [userUuid, providerId]);
+
+        if (checkResult.rows.length > 0) {
+          // 기존 회원
+          const existingUser = checkResult.rows[0];
+          isNewUser = false;
+
+          const existingBirth = existingUser.birth_date
+            ? (existingUser.birth_date instanceof Date
+                ? existingUser.birth_date.toISOString().split('T')[0]
+                : String(existingUser.birth_date).split('T')[0])
+            : birthDate;
+
+          finalUser = {
+            id: existingUser.id,
+            userName: existingUser.user_name,
+            email: existingUser.email || email,
+            birthDate: existingBirth,
+            age: existingUser.age,
+            provider: 'naver'
+          };
+        } else {
+          // 신규 회원 등록
+          isNewUser = true;
+          const insertQuery = `
+            INSERT INTO user_profiles (
+              id, email, provider, provider_id, user_name, birth_date, age,
+              chronic_conditions, allergies, barrier_free_required,
+              walk_fitness_level, required_infra, has_medication, created_at, updated_at
+            ) VALUES ($1, $2, 'naver', $3, $4, $5, $6, '{}', '{}', false, '초급(완만)', '기본', false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING *;
+          `;
+          const insertResult = await pool.query(insertQuery, [
+            userUuid,
+            email,
+            providerId,
+            userName,
+            birthDate,
+            calculatedAge
+          ]);
+
+          const newUserRow = insertResult.rows[0];
+          const newBirth = newUserRow.birth_date
+            ? (newUserRow.birth_date instanceof Date
+                ? newUserRow.birth_date.toISOString().split('T')[0]
+                : String(newUserRow.birth_date).split('T')[0])
+            : birthDate;
+
+          finalUser = {
+            id: newUserRow.id,
+            userName: newUserRow.user_name,
+            email: newUserRow.email || email,
+            birthDate: newBirth,
+            age: newUserRow.age,
+            provider: 'naver'
+          };
+        }
+      } catch (dbErr) {
+        console.error('❌ [AWS RDS] 네이버 유저 DB 처리 오류:', dbErr.message);
+        // DB 쿼리 실패 시에도 인증 플로우가 중단되지 않도록 폴백 처리
+      }
+    } else {
+      console.warn('⚠️ [AWS RDS] DATABASE_URL 미설정으로 메모리 프로필을 사용합니다.');
+      isNewUser = true;
+    }
+
+    // 5. 서비스 JWT 토큰 발급 (유효기간 7일)
+    const token = jwt.sign({
+      id: finalUser.id,
+      email: finalUser.email,
+      userName: finalUser.userName,
+      provider: 'naver'
+    });
+
     return res.json({
       success: true,
-      message: '네이버 로그인 요청이 정상 접수되었습니다.'
+      isNewUser,
+      token,
+      user: finalUser
     });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error('네이버 소셜 로그인 라우트 오류:', err);
+    return res.status(500).json({
+      success: false,
+      error: '네이버 로그인 처리 중 서버 오류가 발생했습니다.'
+    });
   }
 });
 
 module.exports = router;
+

@@ -49,7 +49,7 @@
 ```
 
 ## POST /api/posts — 게시글 작성
-🔒 로그인 필요
+🔒 로그인 필요 (헤더: `Authorization: Bearer <Token>`)
 
 요청
 ```json
@@ -57,6 +57,42 @@
 ```
 응답 `201` — 생성된 게시글 (위 목록의 항목과 같은 형태)
 에러 `400` 제목/내용 누락, `401`, `403`
+
+---
+
+## POST /api/auth/naver — 네이버 소셜 로그인 및 회원가입
+네이버 인가코드(`code`)와 `state`를 전달받아 네이버 토큰 및 프로필을 조회하고, DB 등록/조회 후 서비스 JWT 토큰을 발급합니다.
+🔒 로그인 불필요 (OAuth 2.0 인가 코드 교환)
+
+요청
+```json
+{
+  "code": "네이버가_발급한_authorization_code",
+  "state": "CSRF_방지용_랜덤_state"
+}
+```
+
+응답 `200`
+```json
+{
+  "success": true,
+  "isNewUser": false,
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "id": "c1f7a0b1-...",
+    "userName": "홍길동",
+    "email": "user@naver.com",
+    "birthDate": "1990-05-15",
+    "age": 36,
+    "provider": "naver"
+  }
+}
+```
+> **참고**: `isNewUser: true`인 경우 신규 유저이므로 프론트엔드에서 건강 프로필 추가 입력 화면(`SignupFlow - Step 2`)으로 유도합니다.
+
+에러
+- `400`: `code` 또는 `state` 누락, 네이버 토큰 발급 실패, 네이버 프로필 조회 실패
+- `500`: 서버 내부 오류
 
 ---
 
@@ -70,3 +106,4 @@
 응답 2xx: { ... }
 에러: 400 ..., 404 ...
 ```
+

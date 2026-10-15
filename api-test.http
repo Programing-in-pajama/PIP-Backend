@@ -54,3 +54,24 @@ Content-Type: application/json
 {
   "content": "제목 없음"
 }
+
+
+### 6. 네이버 소셜 로그인 — 필수 파라미터 누락 예외 테스트 (400 에러 확인)
+POST {{baseUrl}}/api/auth/naver
+Content-Type: application/json
+
+{
+  "code": ""
+}
+
+
+### 7. 네이버 소셜 로그인 — 프론트엔드 인가코드 교환 요청 테스트
+# 네이버 로그인 창(http://localhost:5173 등)에서 리다이렉트되어 발급된 code와 state를 입력하여 테스트합니다.
+POST {{baseUrl}}/api/auth/naver
+Content-Type: application/json
+
+{
+  "code": "sample_naver_auth_code_here",
+  "state": "sample_random_state_here"
+}
+

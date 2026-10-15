@@ -43,7 +43,12 @@
   - 요청: `{ "userId": "...", "password": "..." }`
   - 로직: 비밀번호 일치 확인 및 JWT 토큰/세션 발급
   - 예외 처리: 아이디/비밀번호 불일치 시 401 에러 (`"아이디/비밀번호를 확인하세요"`)
-- [ ] 소셜 로그인 연동 검토 (카카오, 네이버, 구글 Supabase OAuth)
+- [x] 네이버 소셜 로그인 연동 (`POST /api/auth/naver`)
+  - 요청: `{ "code": "...", "state": "..." }`
+  - 로직: 네이버 OAuth 토큰 및 프로필 조회, DB 등록/확인, JWT 토큰 발급
+  - 완료: `PIP-Backend/.env`, `lib/db.js`, `docs/API.md`, `routes/auth.js`, `middleware/auth.js`
+- [ ] 소셜 로그인 추가 연동 검토 (카카오, 구글)
+
 
 ---
 
