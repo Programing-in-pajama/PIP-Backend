@@ -191,6 +191,7 @@ async function searchLiveGovApi(query, maxRows = 5) {
       return await response.json();
     };
 
+    console.log(`📡 [2단계] 식약처 공공데이터포털(DrbBundleInfoService02) 실시간 호출 중... (검색어: "${clean}")`);
     const [dataCnsgn, dataTrust] = await Promise.allSettled([
       fetchWithTimeout(urlCnsgn),
       fetchWithTimeout(urlTrust)
@@ -295,13 +296,19 @@ function enrichMedication(item) {
 
 // GET /api/medications/search?query=...
 router.get('/search', async (req, res) => {
+  const startTime = Date.now();
   try {
     const query = req.query.query || req.query.q || '';
     if (!query || !query.trim()) {
       return res.json([]);
     }
 
-    const results = await searchHybridMedications(query);
+    const keyword = query.trim();
+    console.log(`\n🔍 [약물 검색 요청 수신] 검색어: "${keyword}"`);
+    console.log(`⚡ [1단계] 15대 만성질환 마스터 DB 및 식약처 DUR 하이브리드 엔진 가동 중...`);
+    const results = await searchHybridMedications(keyword);
+    const duration = Date.now() - startTime;
+    console.log(`✅ [약물 검색 완료] 총 ${results.length}건 의약품 데이터 반환 (처리시간: ${duration}ms)`);
     return res.json(results);
   } catch (err) {
     console.error('❌ [약물 검색 API 오류]:', err);
