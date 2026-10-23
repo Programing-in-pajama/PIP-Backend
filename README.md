@@ -1,8 +1,29 @@
 # SOYO 백엔드 (program-in-pazama)
 
-Node.js + Express API 서버입니다. 프론트엔드: [programing-in-pajama](https://github.com/philip0613/programing-in-pajama)
+Node.js + Express API 서버입니다. 프론트엔드: [programing-in-pajama](https://github.com/philip0613/programing-in-pazama)
 
 > 🐣 **Git/GitHub 이 처음이라면 → [초보자 가이드](docs/GUIDE.md) 부터 보세요!** (명령어 없이 버튼으로만)
+
+---
+
+## 🚀 개발 및 구현 진행 상황 (2026-10-24 최신)
+
+### ✅ 네이버 소셜 로그인 및 데이터베이스(Supabase) 연동 완료
+1. **OAuth 2.0 Authorization Code Flow 백엔드 파이프라인 완성**:
+   - `POST /api/auth/naver`: 인가코드(`code`) 및 `state` 수신 ➔ 네이버 토큰 서버 통신 ➔ 네이버 프로필 API(`https://openapi.naver.com/v1/nid/me`) 조회
+   - 자체 서비스 HMAC-SHA256 JWT 발급 (`lib/jwt.js`, 유효기간 7일)
+2. **PostgreSQL / Supabase DB 연동 및 자동 스키마 마이그레이션 (`lib/db.js`)**:
+   - Supabase 커넥션 풀러(Pooler, 6543 포트) 연결 완료
+   - `user_profiles` 테이블: `id (UUID)`, `email`, `provider='naver'`, `provider_id`, `user_name`, `birth_date`, `age`, `chronic_conditions`, `allergies` 등 영구 저장
+   - `user_medications` 테이블: 유저별 복용 약물(외래키 CASCADE) 연계 저장 지원
+   - 신규 가입자(`isNewUser = true`) 및 기존 가입자(`isNewUser = false`) 자동 판별 로직 적용
+3. **이중 인증 미들웨어 (`middleware/auth.js`)**:
+   - 서비스 자체 JWT 토큰과 Supabase Access Token을 동시에 해석하는 Fallback 인증 체계 구축
+4. **API 명세 및 테스트 시나리오 최신화**:
+   - [docs/API.md](docs/API.md): 네이버 소셜 로그인 요청/응답 규격 정리
+   - [api-test.http](api-test.http): 400 Bad Request 예외 및 인가코드 교환 테스트 케이스 추가
+
+---
 
 ## 처음 실행하기
 **가장 쉬운 방법:** 폴더 안의 `실행하기.bat` 더블클릭 (맥은 `맥용/실행하기.command`). 설치부터 실행까지 자동으로 해줘요.
@@ -35,10 +56,14 @@ npm run dev
 ```
 index.js              서버 설정 + 라우트 등록 (여기는 거의 건드릴 일 없음)
 routes/               ★ 기능별 API — 대부분의 작업은 여기서
+  auth.js               POST /api/auth/naver, POST /api/auth/profile 등 인증/프로필
   test.js               GET /api/test
   posts.js              GET·POST /api/posts
 middleware/           요청 전에 실행되는 검사 (로그인 확인 등)
-lib/                  DB, Supabase 연결
+  auth.js               authenticateToken (JWT & Supabase 이중 검증)
+lib/                  DB, Supabase, JWT 서명 유틸
+  db.js                 PostgreSQL Pool 및 스키마 Auto-Migration
+  jwt.js                자체 HMAC-SHA256 JWT 서명/검증
 docs/API.md           ★ API 명세 (프론트와의 약속)
 ```
 
