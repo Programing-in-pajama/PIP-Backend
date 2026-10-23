@@ -31,34 +31,6 @@
 }
 ```
 
-## GET /api/posts — 게시글 목록
-로그인 불필요. 최신순 정렬.
-
-응답 `200`
-```json
-[
-  {
-    "id": 1,
-    "user_id": "supabase-user-uuid",
-    "user_email": "friend@example.com",
-    "title": "제목",
-    "content": "내용",
-    "created_at": "2026-10-07T00:00:00.000Z"
-  }
-]
-```
-
-## POST /api/posts — 게시글 작성
-🔒 로그인 필요 (헤더: `Authorization: Bearer <Token>`)
-
-요청
-```json
-{ "title": "제목", "content": "내용" }
-```
-응답 `201` — 생성된 게시글 (위 목록의 항목과 같은 형태)
-에러 `400` 제목/내용 누락, `401`, `403`
-
----
 
 ## POST /api/auth/naver — 네이버 소셜 로그인 및 회원가입
 네이버 인가코드(`code`)와 `state`를 전달받아 네이버 토큰 및 프로필을 조회하고, DB 등록/조회 후 서비스 JWT 토큰을 발급합니다.

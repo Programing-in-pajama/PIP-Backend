@@ -16,47 +16,7 @@
 GET {{baseUrl}}/api/test
 
 
-### 2. 게시글 목록
-GET {{baseUrl}}/api/posts
-
-
-### 3. 로그인해서 토큰 받기 (로그인이 필요한 API 를 테스트하기 전에 먼저 실행)
-# .env 의 TEST_EMAIL / TEST_PASSWORD 에 화면에서 회원가입한 계정을 넣어두세요.
-# 비밀번호를 이 파일에 직접 적지 마세요! (이 파일은 GitHub 에 올라가요)
-# @name login
-POST {{$dotenv SUPABASE_URL}}/auth/v1/token?grant_type=password
-apikey: {{$dotenv SUPABASE_ANON_KEY}}
-Content-Type: application/json
-
-{
-  "email": "{{$dotenv TEST_EMAIL}}",
-  "password": "{{$dotenv TEST_PASSWORD}}"
-}
-
-
-### 4. 게시글 작성 (3번을 먼저 실행해야 해요)
-# ⚠️ DB 가 실제 사이트와 같아서, 여기서 쓴 글은 실제 사이트에도 보여요. 제목에 [테스트] 를 붙여주세요.
-POST {{baseUrl}}/api/posts
-Authorization: Bearer {{login.response.body.access_token}}
-Content-Type: application/json
-
-{
-  "title": "[테스트] API 테스트 글",
-  "content": "api-test.http 에서 보낸 글이에요"
-}
-
-
-### 5. 잘못된 요청 테스트 — 제목이 없으면 400 에러가 나와야 정상
-POST {{baseUrl}}/api/posts
-Authorization: Bearer {{login.response.body.access_token}}
-Content-Type: application/json
-
-{
-  "content": "제목 없음"
-}
-
-
-### 6. 네이버 소셜 로그인 — 필수 파라미터 누락 예외 테스트 (400 에러 확인)
+### 2. 네이버 소셜 로그인 — 필수 파라미터 누락 예외 테스트 (400 에러 확인)
 POST {{baseUrl}}/api/auth/naver
 Content-Type: application/json
 
@@ -65,7 +25,7 @@ Content-Type: application/json
 }
 
 
-### 7. 네이버 소셜 로그인 — 프론트엔드 인가코드 교환 요청 테스트
+### 3. 네이버 소셜 로그인 — 프론트엔드 인가코드 교환 요청 테스트
 # 네이버 로그인 창(http://localhost:5173 등)에서 리다이렉트되어 발급된 code와 state를 입력하여 테스트합니다.
 POST {{baseUrl}}/api/auth/naver
 Content-Type: application/json

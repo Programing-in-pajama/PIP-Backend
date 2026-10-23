@@ -57,7 +57,6 @@ app.get('/', (req, res) => res.json({ status: 'online', message: 'SOYO API Serve
 
 // API 라우트 등록
 app.use('/api/test', require('./routes/test'));
-app.use('/api/posts', require('./routes/posts'));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/user', require('./routes/user'));
 

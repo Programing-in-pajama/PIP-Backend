@@ -58,7 +58,6 @@ index.js              서버 설정 + 라우트 등록 (여기는 거의 건드�
 routes/               ★ 기능별 API — 대부분의 작업은 여기서
   auth.js               POST /api/auth/naver, POST /api/auth/profile 등 인증/프로필
   test.js               GET /api/test
-  posts.js              GET·POST /api/posts
 middleware/           요청 전에 실행되는 검사 (로그인 확인 등)
   auth.js               authenticateToken (JWT & Supabase 이중 검증)
 lib/                  DB, Supabase, JWT 서명 유틸
@@ -72,7 +71,7 @@ VS Code 에서 `api-test.http` 를 열고 요청 위의 **Send Request** 클릭 
 
 ## 새 API 추가하는 법
 1. `docs/API.md` 에 명세를 먼저 적고 단톡방에 공유
-2. `routes/` 에 파일 생성 (예: `routes/comments.js`, `routes/posts.js` 참고)
+2. `routes/` 에 파일 생성 (예: `routes/comments.js`, `routes/user.js` 참고)
 3. `index.js` 에 한 줄 추가: `app.use('/api/comments', require('./routes/comments'));`
 4. 로그인이 필요하면 `authenticateToken` 미들웨어를 붙이면 `req.user` 를 쓸 수 있음
 5. `api-test.http` 에 테스트 요청 추가
