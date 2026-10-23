@@ -96,6 +96,38 @@
 
 ---
 
+## GET /api/medications/search — 약물 검색 (하이브리드 식약처 DUR 및 다빈도 처방 의약품)
+🔒 로그인 불필요
+담당: 손민기
+
+요청 쿼리 스트링:
+- `query` 또는 `q`: 검색 키워드 (예: `다이`, `암로디핀`, `메트포르민`)
+
+응답 `200`
+```json
+[
+  {
+    "id": "med-master-01",
+    "name": "다이아벡스정 500mg",
+    "ingredientName": "메트포르민염산염",
+    "timing": "아침 식후",
+    "cautionNote": "식후 30분 규칙적 완보 권장 / 식사 거름 방지 및 탈수 유의",
+    "durWarningTags": ["용량주의", "노인주의"],
+    "inferredCondition": "당뇨",
+    "pharmacologicalClass": "혈당강하제 (비구아니드계)"
+  }
+]
+```
+> **참고**: 복합 성분(예: 코자엑스큐정)은 성분 간 구분을 `+`로 이어붙여 프론트엔드의 `findDuplicateIngredients` 성분 중복 감지 알고리즘과 100% 호환됩니다.
+
+## GET /api/medications/popular — 다빈도 처방 인기 의약품 목록
+🔒 로그인 불필요
+담당: 손민기
+
+응답 `200`: `POPULAR_MEDICATIONS` 15대 의약품 전체 목록
+
+---
+
 ## 새 API 추가 양식 (복사해서 사용)
 ```
 ## METHOD /api/경로 — 한 줄 설명

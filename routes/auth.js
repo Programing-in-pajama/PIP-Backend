@@ -5,6 +5,7 @@ const nodemailer = require('nodemailer');
 const { pool } = require('../lib/db');
 const { supabase } = require('../lib/supabase');
 const jwt = require('../lib/jwt');
+const { enrichMedication } = require('./medications');
 
 // UUID 형식 보장 헬퍼 (PostgreSQL UUID 타입 컬럼 호환)
 function toUuid(id) {
@@ -263,26 +264,37 @@ router.post('/profile', async (req, res) => {
           hasMedication
         ]);
 
-        // 2. user_medications 저장
+        // 2. user_medications 저장 (성분, 복용시간, 주의사항, DUR태그 풀 스펙 저장)
         await pool.query('DELETE FROM user_medications WHERE user_id = $1', [validUserId]);
+        const enrichedMedList = [];
         for (const med of finalMedications) {
-          await pool.query(`
-            INSERT INTO user_medications (id, user_id, name, timing)
-            VALUES (gen_random_uuid(), $1, $2, '식후')
-          `, [validUserId, med]);
+          const enriched = enrichMedication(med);
+          if (!enriched) continue;
+          const tagsStr = Array.isArray(enriched.durWarningTags)
+            ? enriched.durWarningTags.join(',')
+            : (enriched.durWarningTags || '');
+          await pool.query(
+            `
+            INSERT INTO user_medications (id, user_id, name, ingredient_name, timing, caution_note, dur_warning_tags)
+            VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
+          `,
+            [validUserId, enriched.name, enriched.ingredientName, enriched.timing, enriched.cautionNote, tagsStr]
+          );
+          enrichedMedList.push(enriched);
         }
 
         savedInDb = true;
-        console.log(`✅ [AWS RDS] 사용자 프로필 및 복용약물 저장 완료: ${name} (${validUserId})`);
+        console.log(`✅ [Supabase DB] 사용자 프로필 및 복용약물 저장 완료: ${name} (${validUserId}) - 약물 ${enrichedMedList.length}건`);
       } catch (dbErr) {
-        console.error('❌ [AWS RDS] 프로필 저장 오류:', dbErr.message);
+        console.error('❌ [Supabase DB] 프로필 저장 오류:', dbErr.message);
         return res.status(500).json({ error: `데이터베이스 저장 중 오류가 발생했습니다: ${dbErr.message}` });
       }
     } else {
-      console.warn('⚠️ [AWS RDS] DATABASE_URL 미설정으로 DB 저장을 건너뜁니다.');
+      console.warn('⚠️ [Supabase DB] DATABASE_URL 미설정으로 DB 저장을 건너뜁니다.');
     }
 
     const formattedBirthDate = String(birth).split('T')[0];
+    const finalReturnMeds = finalMedications.map((m) => enrichMedication(m)).filter(Boolean);
 
     const profileData = {
       userId: validUserId,
@@ -292,7 +304,8 @@ router.post('/profile', async (req, res) => {
       allergies: finalAllergies,
       chronicConditions: finalDiseases,
       diseaseIds: finalDiseases,
-      medications: finalMedications,
+      medications: finalReturnMeds,
+      medicationNames: finalReturnMeds.map((m) => m.name),
       hasMedication
     };
 
@@ -324,8 +337,19 @@ router.get('/profile/:userId', async (req, res) => {
     }
 
     const profileRow = result.rows[0];
-    const medResult = await pool.query('SELECT name FROM user_medications WHERE user_id = $1', [validUserId]);
-    const medications = medResult.rows.map((r) => r.name);
+    const medResult = await pool.query(
+      'SELECT id, name, ingredient_name, timing, caution_note, dur_warning_tags FROM user_medications WHERE user_id = $1 ORDER BY created_at ASC',
+      [validUserId]
+    );
+    const medicationObjects = medResult.rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      ingredientName: r.ingredient_name || '',
+      timing: r.timing || '식후',
+      cautionNote: r.caution_note || '',
+      durWarningTags: r.dur_warning_tags ? r.dur_warning_tags.split(',').filter(Boolean) : []
+    }));
+    const medicationNames = medResult.rows.map((r) => r.name);
 
     const allergies = Array.isArray(profileRow.allergies)
       ? profileRow.allergies
@@ -350,7 +374,8 @@ router.get('/profile/:userId', async (req, res) => {
       diseaseIds: chronicConditions,
       allergies,
       hasMedication: profileRow.has_medication,
-      medications
+      medications: medicationObjects,
+      medicationNames
     };
 
     return res.json({

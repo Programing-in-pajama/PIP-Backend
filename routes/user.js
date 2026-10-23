@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const { pool } = require('../lib/db');
+const { enrichMedication } = require('./medications');
 
 // UUID 형식 보장 헬퍼
 function toUuid(id) {
@@ -37,8 +38,19 @@ router.get('/profile', async (req, res) => {
     }
 
     const profileRow = result.rows[0];
-    const medResult = await pool.query('SELECT name FROM user_medications WHERE user_id = $1', [validUserId]);
-    const medications = medResult.rows.map((r) => r.name);
+    const medResult = await pool.query(
+      'SELECT id, name, ingredient_name, timing, caution_note, dur_warning_tags FROM user_medications WHERE user_id = $1 ORDER BY created_at ASC',
+      [validUserId]
+    );
+    const medicationObjects = medResult.rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      ingredientName: r.ingredient_name || '',
+      timing: r.timing || '식후',
+      cautionNote: r.caution_note || '',
+      durWarningTags: r.dur_warning_tags ? r.dur_warning_tags.split(',').filter(Boolean) : []
+    }));
+    const medicationNames = medResult.rows.map((r) => r.name);
 
     const allergies = Array.isArray(profileRow.allergies)
       ? profileRow.allergies
@@ -63,7 +75,8 @@ router.get('/profile', async (req, res) => {
       diseaseIds: chronicConditions,
       allergies,
       hasMedication: profileRow.has_medication,
-      medications
+      medications: medicationObjects,
+      medicationNames
     };
 
     return res.json({
@@ -119,6 +132,8 @@ router.put('/profile', async (req, res) => {
       }
     }
 
+    let enrichedMedList = [];
+
     if (process.env.DATABASE_URL) {
       const profileQuery = `
         INSERT INTO user_profiles (
@@ -146,15 +161,29 @@ router.put('/profile', async (req, res) => {
 
       // 복용 약물 목록 갱신 (전체 삭제 후 재등록 — 약물이 없으면 비움)
       await pool.query('DELETE FROM user_medications WHERE user_id = $1', [validUserId]);
+      enrichedMedList = [];
       for (const med of finalMedications) {
-        await pool.query(`
-          INSERT INTO user_medications (id, user_id, name, timing)
-          VALUES (gen_random_uuid(), $1, $2, '식후')
-        `, [validUserId, med]);
+        const enriched = enrichMedication(med);
+        if (!enriched) continue;
+        const tagsStr = Array.isArray(enriched.durWarningTags)
+          ? enriched.durWarningTags.join(',')
+          : (enriched.durWarningTags || '');
+        await pool.query(
+          `
+          INSERT INTO user_medications (id, user_id, name, ingredient_name, timing, caution_note, dur_warning_tags)
+          VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
+        `,
+          [validUserId, enriched.name, enriched.ingredientName, enriched.timing, enriched.cautionNote, tagsStr]
+        );
+        enrichedMedList.push(enriched);
       }
 
-      console.log(`✅ [AWS RDS] /api/user/profile 수정 완료: (${validUserId})`);
+      console.log(`✅ [Supabase DB] /api/user/profile 수정 완료: (${validUserId}) - 약물 ${enrichedMedList.length}건 동기화`);
     }
+
+    const finalReturnMeds = enrichedMedList.length > 0
+      ? enrichedMedList
+      : finalMedications.map((m) => enrichMedication(m)).filter(Boolean);
 
     const profileData = {
       userId: validUserId,
@@ -164,7 +193,8 @@ router.put('/profile', async (req, res) => {
       allergies: finalAllergies,
       diseaseIds: finalDiseases,
       chronicConditions: finalDiseases,
-      medications: finalMedications,
+      medications: finalReturnMeds,
+      medicationNames: finalReturnMeds.map((m) => m.name),
       hasMedication
     };
 
