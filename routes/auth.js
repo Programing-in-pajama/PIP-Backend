@@ -208,11 +208,11 @@ router.post('/login', async (req, res) => {
     const cleanPw = String(password);
     const passwordHash = crypto.createHash('sha256').update(cleanPw).digest('hex');
 
-    // 1. user_profiles 에서 login_id 또는 email 로 계정 조회
+    // 1. user_profiles 에서 login_id 또는 email 로 계정 조회 (최신순 정렬)
     const userResult = await pool.query(`
       SELECT * FROM user_profiles 
       WHERE login_id = $1 OR email = $1 
-      LIMIT 1;
+      ORDER BY updated_at DESC;
     `, [cleanId]);
 
     if (userResult.rows.length === 0) {
@@ -220,12 +220,25 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ success: false, error: '아이디/비밀번호를 확인하세요.' });
     }
 
-    const userRow = userResult.rows[0];
+    // 비밀번호가 일치하는 행을 우선 탐색하고, 없으면 가장 최신 행을 검증 대상으로 선택
+    let userRow = userResult.rows.find(r => r.password_hash === passwordHash) || userResult.rows[0];
 
     // 2. 비밀번호 검증 (sha256 해시 검증)
     if (userRow.password_hash && userRow.password_hash !== passwordHash) {
       console.warn(`❌ [로그인 실패] 비밀번호 불일치: ${cleanId}`);
       return res.status(401).json({ success: false, error: '아이디/비밀번호를 확인하세요.' });
+    }
+
+    // 비밀번호 일치 시(혹은 해시 누락 계정) 동일 계정들의 해시를 최신으로 동기화
+    if (!userRow.password_hash || userResult.rows.length > 1) {
+      try {
+        await pool.query(
+          'UPDATE user_profiles SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE login_id = $2 OR email = $3',
+          [passwordHash, userRow.login_id || cleanId, userRow.email || cleanId]
+        );
+      } catch (syncErr) {
+        console.warn('⚠️ [비밀번호 해시 동기화 예외]:', syncErr.message);
+      }
     }
 
     // 3. 복용 약물 목록 조회
@@ -311,19 +324,23 @@ router.post('/profile', async (req, res) => {
 
     let validUserId = null;
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (cleanRawId && uuidRegex.test(cleanRawId)) {
-      validUserId = cleanRawId;
-    } else if (cleanLoginId || cleanEmail) {
+    // 1. login_id 또는 email 이 이미 존재하는 경우 기존 ID를 우선 재사용 (중복 행 방지)
+    if (cleanLoginId || cleanEmail) {
       const existRes = await pool.query(
-        'SELECT id FROM user_profiles WHERE login_id = $1 OR email = $2 LIMIT 1',
+        'SELECT id FROM user_profiles WHERE login_id = $1 OR email = $2 ORDER BY updated_at DESC LIMIT 1',
         [cleanLoginId || '', cleanEmail || '']
       );
       if (existRes.rows.length > 0) {
         validUserId = existRes.rows[0].id;
       }
     }
+    // 2. 기존 레코드가 없을 때만 요청받은 UUID 또는 신규 UUID 발급
     if (!validUserId) {
-      validUserId = toUuid(cleanRawId || cleanLoginId || cleanEmail);
+      if (cleanRawId && uuidRegex.test(cleanRawId)) {
+        validUserId = cleanRawId;
+      } else {
+        validUserId = toUuid(cleanRawId || cleanLoginId || cleanEmail);
+      }
     }
     const passwordHash = password ? crypto.createHash('sha256').update(String(password)).digest('hex') : null;
 
