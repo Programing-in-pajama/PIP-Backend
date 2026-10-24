@@ -596,15 +596,45 @@ router.post('/naver', async (req, res) => {
 
     let tokenData = null;
     for (const secretAttempt of secretCandidates) {
-      const tokenUrl = `https://nid.naver.com/oauth2.0/token?grant_type=authorization_code&client_id=${clientId}&client_secret=${secretAttempt}&code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
-      const tokenRes = await fetch(tokenUrl, { method: 'POST' });
-      tokenData = await tokenRes.json();
+      const formParams = new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        client_secret: secretAttempt,
+        code: code,
+        state: state
+      });
 
-      if (!tokenData.error) {
+      // 1) 네이버 공식 규격: POST + application/x-www-form-urlencoded 본문 전송
+      let tokenRes = await fetch('https://nid.naver.com/oauth2.0/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        body: formParams.toString()
+      });
+      tokenData = await tokenRes.json().catch(() => null);
+
+      // 2) 만약 POST 거절 시 GET 쿼리스트링 폴백 시도
+      if (!tokenData || tokenData.error) {
+        const getUrl = `https://nid.naver.com/oauth2.0/token?${formParams.toString()}`;
+        const getRes = await fetch(getUrl, {
+          method: 'GET',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
+        });
+        const getData = await getRes.json().catch(() => null);
+        if (getData && !getData.error) {
+          tokenData = getData;
+        }
+      }
+
+      if (tokenData && !tokenData.error) {
         console.log(`✅ [Naver OAuth 토큰 발급 성공] (사용된 시크릿 첫글자: ${secretAttempt[0]})`);
         break;
       }
-      if (tokenData.error_description !== 'wrong client id / client secret pair') {
+      if (tokenData?.error_description !== 'wrong client id / client secret pair') {
         break;
       }
       console.warn(`⚠️ [Naver OAuth] 시크릿 첫글자 '${secretAttempt[0]}' 거절됨, 다음 후보 시도...`);
