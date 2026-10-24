@@ -566,13 +566,35 @@ router.post('/naver', async (req, res) => {
     });
 
     // 2. 네이버 토큰 서버로 접근 토큰(Access Token) 발급 요청
-    const tokenUrl = `https://nid.naver.com/oauth2.0/token?grant_type=authorization_code&client_id=${clientId}&client_secret=${clientSecret}&code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
+    // Secret의 첫 글자가 대문자 'I' / 소문자 'l' / 숫자 '1' 혼동 가능성이 있으므로 후보군 자동 대응
+    const secretCandidates = [clientSecret];
+    const firstChar = clientSecret[0];
+    if (firstChar === 'I') {
+      secretCandidates.push('l' + clientSecret.slice(1), '1' + clientSecret.slice(1));
+    } else if (firstChar === 'l') {
+      secretCandidates.push('I' + clientSecret.slice(1), '1' + clientSecret.slice(1));
+    } else if (firstChar === '1') {
+      secretCandidates.push('I' + clientSecret.slice(1), 'l' + clientSecret.slice(1));
+    }
 
-    const tokenRes = await fetch(tokenUrl, { method: 'POST' });
-    const tokenData = await tokenRes.json();
+    let tokenData = null;
+    for (const secretAttempt of secretCandidates) {
+      const tokenUrl = `https://nid.naver.com/oauth2.0/token?grant_type=authorization_code&client_id=${clientId}&client_secret=${secretAttempt}&code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
+      const tokenRes = await fetch(tokenUrl, { method: 'POST' });
+      tokenData = await tokenRes.json();
+
+      if (!tokenData.error) {
+        console.log(`✅ [Naver OAuth 토큰 발급 성공] (사용된 시크릿 첫글자: ${secretAttempt[0]})`);
+        break;
+      }
+      if (tokenData.error_description !== 'wrong client id / client secret pair') {
+        break;
+      }
+      console.warn(`⚠️ [Naver OAuth] 시크릿 첫글자 '${secretAttempt[0]}' 거절됨, 다음 후보 시도...`);
+    }
 
     if (tokenData.error) {
-      console.error('❌ [Naver OAuth 토큰 발급 거절]:', tokenData);
+      console.error('❌ [Naver OAuth 토큰 발급 최종 거절]:', tokenData);
       return res.status(400).json({
         success: false,
         error: `네이버 토큰 발급 실패: ${tokenData.error_description || tokenData.error}`
