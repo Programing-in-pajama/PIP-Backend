@@ -2,15 +2,24 @@ const express = require('express');
 const router = express.Router();
 const {
   YEOKGOK_STATION,
-  COURSE_10_1_POINTS, COURSE_10_1_STEPS,
-  COURSE_10_2_POINTS, COURSE_10_2_STEPS,
-  COURSE_10_3_POINTS, COURSE_10_3_STEPS,
-  COURSE_25_1_POINTS, COURSE_25_1_STEPS,
-  COURSE_25_2_POINTS, COURSE_25_2_STEPS,
-  COURSE_25_3_POINTS, COURSE_25_3_STEPS,
-  COURSE_60_1_POINTS, COURSE_60_1_STEPS,
-  COURSE_60_2_POINTS, COURSE_60_2_STEPS,
-  COURSE_60_3_POINTS, COURSE_60_3_STEPS,
+  COURSE_10_1_WITH_REST_POINTS, COURSE_10_1_WITH_REST_STEPS, COURSE_10_1_WITH_REST_META,
+  COURSE_10_1_WALK_ONLY_POINTS, COURSE_10_1_WALK_ONLY_STEPS, COURSE_10_1_WALK_ONLY_META,
+  COURSE_10_2_WITH_REST_POINTS, COURSE_10_2_WITH_REST_STEPS, COURSE_10_2_WITH_REST_META,
+  COURSE_10_2_WALK_ONLY_POINTS, COURSE_10_2_WALK_ONLY_STEPS, COURSE_10_2_WALK_ONLY_META,
+  COURSE_10_3_WITH_REST_POINTS, COURSE_10_3_WITH_REST_STEPS, COURSE_10_3_WITH_REST_META,
+  COURSE_10_3_WALK_ONLY_POINTS, COURSE_10_3_WALK_ONLY_STEPS, COURSE_10_3_WALK_ONLY_META,
+  COURSE_25_1_WITH_REST_POINTS, COURSE_25_1_WITH_REST_STEPS, COURSE_25_1_WITH_REST_META,
+  COURSE_25_1_WALK_ONLY_POINTS, COURSE_25_1_WALK_ONLY_STEPS, COURSE_25_1_WALK_ONLY_META,
+  COURSE_25_2_WITH_REST_POINTS, COURSE_25_2_WITH_REST_STEPS, COURSE_25_2_WITH_REST_META,
+  COURSE_25_2_WALK_ONLY_POINTS, COURSE_25_2_WALK_ONLY_STEPS, COURSE_25_2_WALK_ONLY_META,
+  COURSE_25_3_WITH_REST_POINTS, COURSE_25_3_WITH_REST_STEPS, COURSE_25_3_WITH_REST_META,
+  COURSE_25_3_WALK_ONLY_POINTS, COURSE_25_3_WALK_ONLY_STEPS, COURSE_25_3_WALK_ONLY_META,
+  COURSE_60_1_WITH_REST_POINTS, COURSE_60_1_WITH_REST_STEPS, COURSE_60_1_WITH_REST_META,
+  COURSE_60_1_WALK_ONLY_POINTS, COURSE_60_1_WALK_ONLY_STEPS, COURSE_60_1_WALK_ONLY_META,
+  COURSE_60_2_WITH_REST_POINTS, COURSE_60_2_WITH_REST_STEPS, COURSE_60_2_WITH_REST_META,
+  COURSE_60_2_WALK_ONLY_POINTS, COURSE_60_2_WALK_ONLY_STEPS, COURSE_60_2_WALK_ONLY_META,
+  COURSE_60_3_WITH_REST_POINTS, COURSE_60_3_WITH_REST_STEPS, COURSE_60_3_WITH_REST_META,
+  COURSE_60_3_WALK_ONLY_POINTS, COURSE_60_3_WALK_ONLY_STEPS, COURSE_60_3_WALK_ONLY_META,
   TRAILS
 } = require('../lib/yeokgokTrails');
 const { YEOKGOK_RESTAURANTS } = require('../lib/yeokgokRestaurants');
@@ -282,28 +291,55 @@ const handleRecommend = async (req, res) => {
       trailCandidates = [
         {
           title: '역곡상상시장 문화길 (10분)',
-          points: COURSE_10_1_POINTS,
-          steps: COURSE_10_1_STEPS,
-          baseMin: 10,
-          baseKm: 0.74,
+          primaryRestId: COURSE_10_1_WITH_REST_META.restId,
+          withRest: {
+            points: COURSE_10_1_WITH_REST_POINTS,
+            steps: COURSE_10_1_WITH_REST_STEPS,
+            durationMin: COURSE_10_1_WITH_REST_META.durationMin,
+            distanceKm: COURSE_10_1_WITH_REST_META.distanceKm,
+          },
+          walkOnly: {
+            points: COURSE_10_1_WALK_ONLY_POINTS,
+            steps: COURSE_10_1_WALK_ONLY_STEPS,
+            durationMin: COURSE_10_1_WALK_ONLY_META.durationMin,
+            distanceKm: COURSE_10_1_WALK_ONLY_META.distanceKm,
+          },
           roadType: '평탄한 보행로 · 시장 아케이드 구간',
           features: ['역곡상상시장 아케이드', '보행자 우선도로', '안심 쉼터 2곳'],
         },
         {
           title: '역곡남부 평탄 골목길 (12분)',
-          points: COURSE_10_2_POINTS,
-          steps: COURSE_10_2_STEPS,
-          baseMin: 12,
-          baseKm: 0.95,
+          primaryRestId: COURSE_10_2_WITH_REST_META.restId,
+          withRest: {
+            points: COURSE_10_2_WITH_REST_POINTS,
+            steps: COURSE_10_2_WITH_REST_STEPS,
+            durationMin: COURSE_10_2_WITH_REST_META.durationMin,
+            distanceKm: COURSE_10_2_WITH_REST_META.distanceKm,
+          },
+          walkOnly: {
+            points: COURSE_10_2_WALK_ONLY_POINTS,
+            steps: COURSE_10_2_WALK_ONLY_STEPS,
+            durationMin: COURSE_10_2_WALK_ONLY_META.durationMin,
+            distanceKm: COURSE_10_2_WALK_ONLY_META.distanceKm,
+          },
           roadType: '평탄한 동네 골목길 · 휴식 벤치 2곳',
           features: ['부천동 주민센터 쉼터', '차량 통행 적은 안심길'],
         },
         {
           title: '가톨릭대 정문 앞 평탄 산책 (11분)',
-          points: COURSE_10_3_POINTS,
-          steps: COURSE_10_3_STEPS,
-          baseMin: 11,
-          baseKm: 0.85,
+          primaryRestId: COURSE_10_3_WITH_REST_META.restId,
+          withRest: {
+            points: COURSE_10_3_WITH_REST_POINTS,
+            steps: COURSE_10_3_WITH_REST_STEPS,
+            durationMin: COURSE_10_3_WITH_REST_META.durationMin,
+            distanceKm: COURSE_10_3_WITH_REST_META.distanceKm,
+          },
+          walkOnly: {
+            points: COURSE_10_3_WALK_ONLY_POINTS,
+            steps: COURSE_10_3_WALK_ONLY_STEPS,
+            durationMin: COURSE_10_3_WALK_ONLY_META.durationMin,
+            distanceKm: COURSE_10_3_WALK_ONLY_META.distanceKm,
+          },
           roadType: '완만한 인도 · 무장애 휠체어 램프',
           features: ['가톨릭대 앞 가로수길', '턱 없는 배리어프리 인도'],
         }
@@ -312,28 +348,55 @@ const handleRecommend = async (req, res) => {
       trailCandidates = [
         {
           title: '역곡천 수변 순환 코스 (25분)',
-          points: COURSE_25_1_POINTS,
-          steps: COURSE_25_1_STEPS,
-          baseMin: 25,
-          baseKm: 1.8,
+          primaryRestId: COURSE_25_1_WITH_REST_META.restId,
+          withRest: {
+            points: COURSE_25_1_WITH_REST_POINTS,
+            steps: COURSE_25_1_WITH_REST_STEPS,
+            durationMin: COURSE_25_1_WITH_REST_META.durationMin,
+            distanceKm: COURSE_25_1_WITH_REST_META.distanceKm,
+          },
+          walkOnly: {
+            points: COURSE_25_1_WALK_ONLY_POINTS,
+            steps: COURSE_25_1_WALK_ONLY_STEPS,
+            durationMin: COURSE_25_1_WALK_ONLY_META.durationMin,
+            distanceKm: COURSE_25_1_WALK_ONLY_META.distanceKm,
+          },
           roadType: '평탄한 수변 데크로드 · 경사 2% 이하 (계단 없음)',
           features: ['역곡천 수변 데크', '징검다리 쉼터', '무장애 슬로프 진입로'],
         },
         {
           title: '가톨릭대 숲길 & 시장 둘레길 (24분)',
-          points: COURSE_25_2_POINTS,
-          steps: COURSE_25_2_STEPS,
-          baseMin: 24,
-          baseKm: 1.6,
+          primaryRestId: COURSE_25_2_WITH_REST_META.restId,
+          withRest: {
+            points: COURSE_25_2_WITH_REST_POINTS,
+            steps: COURSE_25_2_WITH_REST_STEPS,
+            durationMin: COURSE_25_2_WITH_REST_META.durationMin,
+            distanceKm: COURSE_25_2_WITH_REST_META.distanceKm,
+          },
+          walkOnly: {
+            points: COURSE_25_2_WALK_ONLY_POINTS,
+            steps: COURSE_25_2_WALK_ONLY_STEPS,
+            durationMin: COURSE_25_2_WALK_ONLY_META.durationMin,
+            distanceKm: COURSE_25_2_WALK_ONLY_META.distanceKm,
+          },
           roadType: '평탄 보도블록 및 완만한 숲길 · 휴식 벤치 3곳',
           features: ['상상시장 아케이드', '가톨릭대 성심교정 숲길', '캠퍼스 잔디마당'],
         },
         {
           title: '푸른수목원 & 항동철길 힐링 코스 (28분)',
-          points: COURSE_25_3_POINTS,
-          steps: COURSE_25_3_STEPS,
-          baseMin: 28,
-          baseKm: 2.1,
+          primaryRestId: COURSE_25_3_WITH_REST_META.restId,
+          withRest: {
+            points: COURSE_25_3_WITH_REST_POINTS,
+            steps: COURSE_25_3_WITH_REST_STEPS,
+            durationMin: COURSE_25_3_WITH_REST_META.durationMin,
+            distanceKm: COURSE_25_3_WITH_REST_META.distanceKm,
+          },
+          walkOnly: {
+            points: COURSE_25_3_WALK_ONLY_POINTS,
+            steps: COURSE_25_3_WALK_ONLY_STEPS,
+            durationMin: COURSE_25_3_WALK_ONLY_META.durationMin,
+            distanceKm: COURSE_25_3_WALK_ONLY_META.distanceKm,
+          },
           roadType: '친환경 흙길 및 수변 목재 데크 · 턱 없는 무장애길',
           features: ['항동철길 평탄길', '항동저수지 수변 관찰 데크', '메타세쿼이아길'],
         }
@@ -342,61 +405,100 @@ const handleRecommend = async (req, res) => {
       trailCandidates = [
         {
           title: '푸른수목원 전체 순환 수변길 (55분)',
-          points: COURSE_60_1_POINTS,
-          steps: COURSE_60_1_STEPS,
-          baseMin: 55,
-          baseKm: 3.5,
+          primaryRestId: COURSE_60_1_WITH_REST_META.restId,
+          withRest: {
+            points: COURSE_60_1_WITH_REST_POINTS,
+            steps: COURSE_60_1_WITH_REST_STEPS,
+            durationMin: COURSE_60_1_WITH_REST_META.durationMin,
+            distanceKm: COURSE_60_1_WITH_REST_META.distanceKm,
+          },
+          walkOnly: {
+            points: COURSE_60_1_WALK_ONLY_POINTS,
+            steps: COURSE_60_1_WALK_ONLY_STEPS,
+            durationMin: COURSE_60_1_WALK_ONLY_META.durationMin,
+            distanceKm: COURSE_60_1_WALK_ONLY_META.distanceKm,
+          },
           roadType: '수변 목재 데크 및 친환경 흙길 · 쉼터 5곳',
           features: ['수목원 전체 순환 데크', '습지 생태공원', '무장애 휠체어 전용길'],
         },
         {
           title: '원미산 숲길 둘레길 (58분)',
-          points: COURSE_60_2_POINTS,
-          steps: COURSE_60_2_STEPS,
-          baseMin: 58,
-          baseKm: 3.8,
+          primaryRestId: COURSE_60_2_WITH_REST_META.restId,
+          withRest: {
+            points: COURSE_60_2_WITH_REST_POINTS,
+            steps: COURSE_60_2_WITH_REST_STEPS,
+            durationMin: COURSE_60_2_WITH_REST_META.durationMin,
+            distanceKm: COURSE_60_2_WITH_REST_META.distanceKm,
+          },
+          walkOnly: {
+            points: COURSE_60_2_WALK_ONLY_POINTS,
+            steps: COURSE_60_2_WALK_ONLY_STEPS,
+            durationMin: COURSE_60_2_WALK_ONLY_META.durationMin,
+            distanceKm: COURSE_60_2_WALK_ONLY_META.distanceKm,
+          },
           roadType: '완만한 흙길 및 친환경 야자매트 · 피톤치드 쉼터',
           features: ['피톤치드 숲길', '전망 정자 쉼터', '배리어프리 진입로'],
         },
         {
           title: '역곡천 ➔ 옥길 합류 생태 둘레길 (52분)',
-          points: COURSE_60_3_POINTS,
-          steps: COURSE_60_3_STEPS,
-          baseMin: 52,
-          baseKm: 3.3,
+          primaryRestId: COURSE_60_3_WITH_REST_META.restId,
+          withRest: {
+            points: COURSE_60_3_WITH_REST_POINTS,
+            steps: COURSE_60_3_WITH_REST_STEPS,
+            durationMin: COURSE_60_3_WITH_REST_META.durationMin,
+            distanceKm: COURSE_60_3_WITH_REST_META.distanceKm,
+          },
+          walkOnly: {
+            points: COURSE_60_3_WALK_ONLY_POINTS,
+            steps: COURSE_60_3_WALK_ONLY_STEPS,
+            durationMin: COURSE_60_3_WALK_ONLY_META.durationMin,
+            distanceKm: COURSE_60_3_WALK_ONLY_META.distanceKm,
+          },
           roadType: '수변 평탄 데크로드 · 벤치 4곳',
           features: ['옥길 생태하천 합류부', '갈대숲 관찰로', '평탄 직선 수변길'],
         }
       ];
     }
 
-    // 3. 3개 코스 완성 (실제 도로망 100% 매핑)
+    // 3. 3개 코스 완성 (실제 도로망 100% 매핑 - 식당 정문 거리 0.0m)
     const courses = [];
     for (let i = 0; i < trailCandidates.length; i++) {
       const cand = trailCandidates[i];
-      const targetRest = includeRestaurant ? sortedRestaurants[i % sortedRestaurants.length] : null;
 
-      // 식당 정보 DTO 매핑
-      const restaurantDTO = targetRest
-        ? {
-            id: targetRest.id,
-            name: targetRest.name,
-            category: targetRest.category,
-            address: targetRest.location?.address,
-            phone: targetRest.phone,
-            menu: targetRest.bestFood?.name || targetRest.foods[0]?.name || '대표 건강식',
-            calories: targetRest.bestFood?.calories || 450,
-            sodium: targetRest.bestFood?.sodium || 500,
-            sugar: targetRest.bestFood?.sugar || 3.0,
-            grade: targetRest.grade,
-            nutritionGrade: targetRest.grade,
-            badgeLabel: targetRest.badgeLabel || '안심식당',
-            gradeLabel: targetRest.bestFood?.label || targetRest.badgeLabel,
-            lat: targetRest.location.lat,
-            lng: targetRest.location.lng,
-            isSafeRestaurant: targetRest.isSafeRestaurant
-          }
-        : null;
+      let restaurantDTO = null;
+      let geoPath = cand.walkOnly.points;
+      let turnByTurn = cand.walkOnly.steps;
+      let durationMin = cand.walkOnly.durationMin;
+      let distanceKm = cand.walkOnly.distanceKm;
+
+      if (includeRestaurant) {
+        const rawRest = YEOKGOK_RESTAURANTS.find((r) => r.id === cand.primaryRestId) || YEOKGOK_RESTAURANTS[0];
+        const evaluatedRest = evaluateRestaurant(rawRest, diseaseIds);
+
+        geoPath = cand.withRest.points;
+        turnByTurn = cand.withRest.steps;
+        durationMin = cand.withRest.durationMin;
+        distanceKm = cand.withRest.distanceKm;
+
+        restaurantDTO = {
+          id: evaluatedRest.id,
+          name: evaluatedRest.name,
+          category: evaluatedRest.category,
+          address: evaluatedRest.location?.address,
+          phone: evaluatedRest.phone,
+          menu: evaluatedRest.bestFood?.name || evaluatedRest.foods[0]?.name || '대표 건강식',
+          calories: evaluatedRest.bestFood?.calories || 450,
+          sodium: evaluatedRest.bestFood?.sodium || 500,
+          sugar: evaluatedRest.bestFood?.sugar || 3.0,
+          grade: evaluatedRest.grade,
+          nutritionGrade: evaluatedRest.grade,
+          badgeLabel: evaluatedRest.badgeLabel || '안심식당',
+          gradeLabel: evaluatedRest.bestFood?.label || evaluatedRest.badgeLabel,
+          lat: evaluatedRest.location.lat,
+          lng: evaluatedRest.location.lng,
+          isSafeRestaurant: evaluatedRest.isSafeRestaurant
+        };
+      }
 
       const hubShort = (startHub.name || '역곡역').split(' ')[0];
       const trailShort = cand.title.split(' ')[0];
@@ -408,14 +510,24 @@ const handleRecommend = async (req, res) => {
         id: `${regionId}-${minutes}-${i}`,
         regionId,
         title: cand.title,
-        durationMin: cand.baseMin,
-        distanceKm: cand.baseKm,
+        durationMin,
+        distanceKm,
         hasRestaurant: Boolean(includeRestaurant && restaurantDTO),
         roadType: cand.roadType,
         features: cand.features,
         waypoints: waypointsText,
-        geoPath: cand.points, // 80~200개의 실제 도로 중심점 좌표열 (건물 관통 절대 없음!)
-        turnByTurn: cand.steps, // 실제 도로명 기반 좌/우회전 턴바이턴 안내
+        geoPath, // 식당 정문(0.0m)을 물리적으로 통과하는 고정밀 실측 도로망
+        turnByTurn,
+        startPoint: {
+          name: `${hubShort} 시작 지점`,
+          lat: geoPath[0]?.lat,
+          lng: geoPath[0]?.lng,
+        },
+        destPoint: {
+          name: `${hubShort} 도착 지점`,
+          lat: geoPath[geoPath.length - 1]?.lat,
+          lng: geoPath[geoPath.length - 1]?.lng,
+        },
         restaurant: restaurantDTO
       });
     }
