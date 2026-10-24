@@ -62,6 +62,29 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/user', require('./routes/user'));
 app.use('/api/medications', require('./routes/medications').router);
 
+// 프로세스 비정상 종료 방지 가드 (Uncaught Exception & Unhandled Rejection)
+process.on('uncaughtException', (err) => {
+  console.error('💥 [Server Process] Uncaught Exception:', err.message, err.stack);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('💥 [Server Process] Unhandled Rejection:', reason);
+});
+
+// 전역 에러 핸들러 (오류 응답 시에도 CORS 헤더를 강제 주입하여 브라우저 CORS 차단 오류 방지)
+app.use((err, req, res, next) => {
+  console.error('💥 [Express Global Error]:', err.message);
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+  res.status(err.status || 500).json({
+    success: false,
+    error: err.message || '서버 내부 오류가 발생했습니다.'
+  });
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server listening on port ${PORT}`);
 });
