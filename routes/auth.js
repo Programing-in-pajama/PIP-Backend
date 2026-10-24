@@ -538,15 +538,22 @@ router.post('/naver', async (req, res) => {
       });
     }
 
-    const clientId = process.env.NAVER_CLIENT_ID;
-    const clientSecret = process.env.NAVER_CLIENT_SECRET;
+    const clientId = (process.env.NAVER_CLIENT_ID || '').trim();
+    const clientSecret = (process.env.NAVER_CLIENT_SECRET || '').trim();
 
     if (!clientId || !clientSecret) {
+      console.error('❌ [Naver OAuth] 환경변수 누락 (NAVER_CLIENT_ID or NAVER_CLIENT_SECRET)');
       return res.status(500).json({
         success: false,
         error: '서버에 네이버 OAuth 설정(NAVER_CLIENT_ID / NAVER_CLIENT_SECRET)이 누락되었습니다.'
       });
     }
+
+    console.log('🚀 [Naver OAuth] 네이버 토큰 발급 요청 전송...', {
+      clientIdPrefix: clientId.substring(0, 5) + '...',
+      codePrefix: code.substring(0, 6) + '...',
+      state
+    });
 
     // 2. 네이버 토큰 서버로 접근 토큰(Access Token) 발급 요청
     const tokenUrl = `https://nid.naver.com/oauth2.0/token?grant_type=authorization_code&client_id=${clientId}&client_secret=${clientSecret}&code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
@@ -555,6 +562,7 @@ router.post('/naver', async (req, res) => {
     const tokenData = await tokenRes.json();
 
     if (tokenData.error) {
+      console.error('❌ [Naver OAuth 토큰 발급 거절]:', tokenData);
       return res.status(400).json({
         success: false,
         error: `네이버 토큰 발급 실패: ${tokenData.error_description || tokenData.error}`
