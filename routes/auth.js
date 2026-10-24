@@ -59,12 +59,38 @@ function getEmailTransporter() {
 // 이메일 인증 코드 발송 (Supabase Auth OTP 우선 발송 - VitalRoot 방식, Render 포트 차단 우회)
 router.post('/email/send-code', async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email, type = 'signup' } = req.body;
     if (!email || !email.includes('@')) {
       return res.status(400).json({ success: false, error: '올바른 이메일 주소를 입력해주세요.' });
     }
 
     const cleanEmail = email.toLowerCase().trim();
+
+    // 회원가입(type === 'signup') 시 이미 가입된 이메일인지 DB 중복 검사
+    if (type === 'signup' && pool) {
+      try {
+        const existingUser = await pool.query(`
+          SELECT id, login_id, email, user_name FROM user_profiles
+          WHERE LOWER(TRIM(email)) = $1
+          ORDER BY updated_at DESC
+          LIMIT 1;
+        `, [cleanEmail]);
+
+        if (existingUser.rows.length > 0) {
+          console.warn(`⚠️ [회원가입 이메일 중복 차단]: 이미 가입된 이메일입니다. (${cleanEmail})`);
+          return res.status(409).json({
+            success: false,
+            alreadyRegistered: true,
+            isDuplicate: true,
+            code: 'ALREADY_REGISTERED',
+            error: '이미 회원가입이 되어 있는 이메일입니다. 아이디와 비밀번호 찾기를 이용해 주세요.'
+          });
+        }
+      } catch (dbErr) {
+        console.warn('⚠️ [이메일 중복 확인 DB 조회 예외]:', dbErr.message);
+      }
+    }
+
     // 1. 만약을 대비한 암호학적 6자리 로컬 난수 백업 생성 (5분 유효)
     const localCode = crypto.randomInt(100000, 1000000).toString();
     const expiresAt = Date.now() + 5 * 60 * 1000;
