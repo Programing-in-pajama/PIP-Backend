@@ -192,11 +192,93 @@ router.post('/email/verify-code', async (req, res) => {
   }
 });
 
-// 회원가입 2단계 건강 프로필 저장 (AWS RDS PostgreSQL user_profiles, user_medications 테이블 영구 저장)
+// 일반 아이디/비밀번호 로그인 API (모든 기기 동기화)
+router.post('/login', async (req, res) => {
+  try {
+    const { loginId, password } = req.body;
+    if (!loginId || !password) {
+      return res.status(400).json({ success: false, error: '아이디와 비밀번호를 입력해주세요.' });
+    }
+
+    if (!process.env.DATABASE_URL) {
+      return res.status(503).json({ success: false, error: '데이터베이스 연결이 설정되지 않았습니다.' });
+    }
+
+    const cleanId = String(loginId).trim();
+    const cleanPw = String(password);
+    const passwordHash = crypto.createHash('sha256').update(cleanPw).digest('hex');
+
+    // 1. user_profiles 에서 login_id 또는 email 로 계정 조회
+    const userResult = await pool.query(`
+      SELECT * FROM user_profiles 
+      WHERE login_id = $1 OR email = $1 
+      LIMIT 1;
+    `, [cleanId]);
+
+    if (userResult.rows.length === 0) {
+      console.warn(`❌ [로그인 실패] 존재하지 않는 계정: ${cleanId}`);
+      return res.status(401).json({ success: false, error: '아이디/비밀번호를 확인하세요.' });
+    }
+
+    const userRow = userResult.rows[0];
+
+    // 2. 비밀번호 검증 (sha256 해시 검증)
+    if (userRow.password_hash && userRow.password_hash !== passwordHash) {
+      console.warn(`❌ [로그인 실패] 비밀번호 불일치: ${cleanId}`);
+      return res.status(401).json({ success: false, error: '아이디/비밀번호를 확인하세요.' });
+    }
+
+    // 3. 복용 약물 목록 조회
+    const medResult = await pool.query('SELECT name FROM user_medications WHERE user_id = $1', [userRow.id]);
+    const medications = medResult.rows.map(r => r.name);
+
+    // 4. 프로필 정규화
+    const allergies = Array.isArray(userRow.allergies)
+      ? userRow.allergies
+      : (userRow.allergies ? String(userRow.allergies).split(', ') : []);
+
+    const chronicConditions = Array.isArray(userRow.chronic_conditions)
+      ? userRow.chronic_conditions
+      : (userRow.chronic_conditions ? String(userRow.chronic_conditions).split(', ') : []);
+
+    const profileData = {
+      userId: userRow.id,
+      loginId: userRow.login_id || cleanId,
+      userName: userRow.user_name,
+      email: userRow.email,
+      birthDate: userRow.birth_date ? String(userRow.birth_date).split('T')[0] : '1970-01-01',
+      age: userRow.age,
+      chronicConditions,
+      diseaseIds: chronicConditions,
+      allergies,
+      medications,
+      hasMedication: userRow.has_medication
+    };
+
+    const token = crypto.randomBytes(32).toString('hex');
+    console.log(`✅ [로그인 성공] 서버 DB 계정 일치 확인: ${userRow.user_name} (${userRow.id})`);
+
+    return res.json({
+      success: true,
+      token,
+      user: profileData,
+      profile: profileData,
+      message: '로그인에 성공했습니다.'
+    });
+  } catch (err) {
+    console.error('로그인 라우트 오류:', err);
+    return res.status(500).json({ success: false, error: '서버 내부 오류가 발생했습니다.' });
+  }
+});
+
+// 회원가입 2단계 건강 프로필 저장 (PostgreSQL user_profiles, user_medications 테이블 영구 저장)
 router.post('/profile', async (req, res) => {
   try {
     const {
       userId,
+      loginId,
+      password,
+      email,
       name,
       userName,
       birth,
@@ -222,6 +304,7 @@ router.post('/profile', async (req, res) => {
     }
 
     const validUserId = toUuid(userId);
+    const passwordHash = password ? crypto.createHash('sha256').update(String(password)).digest('hex') : null;
 
     // PostgreSQL text[] 배열 타입 준수
     const finalAllergies = noAllergy ? [] : (Array.isArray(allergies) ? allergies : [allergies].filter(Boolean));
@@ -241,14 +324,15 @@ router.post('/profile', async (req, res) => {
 
     let savedInDb = false;
 
-    // AWS RDS 연결 상태 확인 및 저장
+    // DB 연결 상태 확인 및 저장
     if (process.env.DATABASE_URL) {
       try {
-        // 1. user_profiles 저장/업데이트 (PostgreSQL text[] 호환)
+        // 1. user_profiles 저장/업데이트 (login_id, password_hash, email 함께 저장)
         const profileQuery = `
           INSERT INTO user_profiles (
-            id, user_name, birth_date, age, chronic_conditions, allergies, has_medication, updated_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+            id, user_name, birth_date, age, chronic_conditions, allergies, has_medication,
+            login_id, password_hash, email, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
           ON CONFLICT (id) DO UPDATE SET
             user_name = EXCLUDED.user_name,
             birth_date = EXCLUDED.birth_date,
@@ -256,6 +340,9 @@ router.post('/profile', async (req, res) => {
             chronic_conditions = EXCLUDED.chronic_conditions,
             allergies = EXCLUDED.allergies,
             has_medication = EXCLUDED.has_medication,
+            login_id = COALESCE(EXCLUDED.login_id, user_profiles.login_id),
+            password_hash = COALESCE(EXCLUDED.password_hash, user_profiles.password_hash),
+            email = COALESCE(EXCLUDED.email, user_profiles.email),
             updated_at = CURRENT_TIMESTAMP
           RETURNING *;
         `;
@@ -266,7 +353,10 @@ router.post('/profile', async (req, res) => {
           calculatedAge,
           finalDiseases,
           finalAllergies,
-          hasMedication
+          hasMedication,
+          loginId || null,
+          passwordHash,
+          email || null
         ]);
 
         // 2. user_medications 저장 (성분, 복용시간, 주의사항, DUR태그 풀 스펙 저장)
@@ -289,7 +379,7 @@ router.post('/profile', async (req, res) => {
         }
 
         savedInDb = true;
-        console.log(`✅ [Supabase DB] 사용자 프로필 및 복용약물 저장 완료: ${finalName} (${validUserId}) - 약물 ${enrichedMedList.length}건`);
+        console.log(`✅ [Supabase DB] 사용자 프로필 및 계정/복용약물 저장 완료: ${finalName} (${validUserId}) - 약물 ${enrichedMedList.length}건`);
       } catch (dbErr) {
         console.error('❌ [Supabase DB] 프로필 저장 오류:', dbErr.message);
         return res.status(500).json({ error: `데이터베이스 저장 중 오류가 발생했습니다: ${dbErr.message}` });
