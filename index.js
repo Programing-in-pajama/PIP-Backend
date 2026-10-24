@@ -61,6 +61,7 @@ app.use('/api/posts', require('./routes/posts'));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/user', require('./routes/user'));
 app.use('/api/medications', require('./routes/medications').router);
+app.use('/api/pins', require('./routes/pins'));
 
 // 프로세스 비정상 종료 방지 가드 (Uncaught Exception & Unhandled Rejection)
 process.on('uncaughtException', (err) => {

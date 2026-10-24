@@ -192,6 +192,217 @@ router.post('/email/verify-code', async (req, res) => {
   }
 });
 
+// 비밀번호 재설정 인증코드 메모리 캐시: cleanLoginId -> { code, expiresAt, attempts, email, verified }
+const passwordResetCodes = new Map();
+
+// 주기적으로 만료된 비밀번호 재설정 인증코드 정리 (10분 간격)
+setInterval(() => {
+  const now = Date.now();
+  for (const [loginId, entry] of passwordResetCodes.entries()) {
+    if (now > entry.expiresAt) {
+      passwordResetCodes.delete(loginId);
+    }
+  }
+}, 10 * 60 * 1000).unref();
+
+// ─── 1. 아이디 찾기 API (이름 + 이메일로 login_id 조회) ───
+router.post('/find-id', async (req, res) => {
+  try {
+    const { name, email } = req.body;
+    if (!name || !email) {
+      return res.status(400).json({ success: false, error: '이름과 이메일을 모두 입력해주세요.' });
+    }
+
+    if (!process.env.DATABASE_URL) {
+      return res.status(503).json({ success: false, error: '데이터베이스 연결이 설정되지 않았습니다.' });
+    }
+
+    const cleanName = String(name).trim();
+    const cleanEmail = String(email).trim().toLowerCase();
+
+    const result = await pool.query(`
+      SELECT login_id, user_name, email FROM user_profiles
+      WHERE TRIM(user_name) = $1 AND LOWER(TRIM(email)) = $2
+      ORDER BY updated_at DESC
+      LIMIT 1;
+    `, [cleanName, cleanEmail]);
+
+    if (result.rows.length === 0 || !result.rows[0].login_id) {
+      return res.status(404).json({ success: false, error: '입력하신 정보와 일치하는 계정을 찾을 수 없습니다.' });
+    }
+
+    const loginId = result.rows[0].login_id;
+    console.log(`✅ [아이디 찾기 성공] 이름: ${cleanName}, 이메일: ${cleanEmail} -> 아이디: ${loginId}`);
+    return res.json({ success: true, loginId });
+  } catch (err) {
+    console.error('❌ [아이디 찾기 에러]:', err);
+    return res.status(500).json({ success: false, error: '아이디 찾기 중 서버 오류가 발생했습니다.' });
+  }
+});
+
+// ─── 2. 비밀번호 재설정 - 인증번호 발송 API ───
+router.post('/password-reset/send-code', async (req, res) => {
+  try {
+    const { loginId } = req.body;
+    if (!loginId) {
+      return res.status(400).json({ success: false, error: '아이디를 입력해주세요.' });
+    }
+
+    if (!process.env.DATABASE_URL) {
+      return res.status(503).json({ success: false, error: '데이터베이스 연결이 설정되지 않았습니다.' });
+    }
+
+    const cleanId = String(loginId).trim();
+    const result = await pool.query(`
+      SELECT login_id, email, user_name FROM user_profiles
+      WHERE login_id = $1 OR email = $1
+      ORDER BY updated_at DESC
+      LIMIT 1;
+    `, [cleanId]);
+
+    if (result.rows.length === 0 || !result.rows[0].email) {
+      return res.status(404).json({ success: false, error: '존재하지 않는 아이디이거나 등록된 이메일이 없습니다.' });
+    }
+
+    const userEmail = result.rows[0].email.trim().toLowerCase();
+    const localCode = crypto.randomInt(100000, 1000000).toString();
+    const expiresAt = Date.now() + 5 * 60 * 1000;
+
+    passwordResetCodes.set(cleanId.toLowerCase(), {
+      code: localCode,
+      email: userEmail,
+      expiresAt,
+      attempts: 0,
+      verified: false
+    });
+
+    // Supabase Auth 이메일 OTP 시도
+    if (supabase) {
+      try {
+        console.log(`🚀 [비밀번호 재설정] Supabase Auth OTP 발송 시도: ${userEmail}`);
+        await supabase.auth.signInWithOtp({
+          email: userEmail,
+          options: { shouldCreateUser: false }
+        });
+      } catch (sbErr) {
+        console.warn('⚠️ [비밀번호 재설정 Supabase OTP 예외]:', sbErr.message);
+      }
+    }
+
+    console.log(`📨 [비밀번호 재설정 인증코드 발송] 아이디: ${cleanId}, 이메일: ${userEmail}, 코드: [${localCode}]`);
+    return res.json({
+      success: true,
+      code: localCode,
+      debugCode: localCode,
+      message: '해당 아이디의 이메일로 인증번호를 발송했습니다.'
+    });
+  } catch (err) {
+    console.error('❌ [비밀번호 재설정 코드 발송 에러]:', err);
+    return res.status(500).json({ success: false, error: '인증번호 발송 중 서버 오류가 발생했습니다.' });
+  }
+});
+
+// ─── 3. 비밀번호 재설정 - 인증번호 검증 API ───
+router.post('/password-reset/verify-code', async (req, res) => {
+  try {
+    const { loginId, code } = req.body;
+    if (!loginId || !code) {
+      return res.status(400).json({ success: false, verified: false, error: '아이디와 인증번호를 입력해주세요.' });
+    }
+
+    const cleanId = String(loginId).trim().toLowerCase();
+    const cleanCode = String(code).trim();
+    const entry = passwordResetCodes.get(cleanId);
+
+    if (!entry) {
+      return res.status(400).json({ success: false, verified: false, error: '인증번호를 먼저 요청해주세요.' });
+    }
+
+    if (Date.now() > entry.expiresAt) {
+      passwordResetCodes.delete(cleanId);
+      return res.status(400).json({ success: false, verified: false, error: '인증번호 유효시간(5분)이 만료되었습니다. 다시 요청해주세요.' });
+    }
+
+    if (entry.attempts >= 5) {
+      passwordResetCodes.delete(cleanId);
+      return res.status(400).json({ success: false, verified: false, error: '인증 시도 횟수를 초과했습니다. 다시 발송해주세요.' });
+    }
+
+    entry.attempts += 1;
+
+    // Supabase Auth verifyOtp 검증 시도
+    let sbVerified = false;
+    if (supabase && entry.email) {
+      try {
+        const sbRes = await supabase.auth.verifyOtp({
+          email: entry.email,
+          token: cleanCode,
+          type: 'email'
+        });
+        if (!sbRes.error && sbRes.data) {
+          sbVerified = true;
+        }
+      } catch (sbErr) {
+        // ignore
+      }
+    }
+
+    if (sbVerified || entry.code === cleanCode) {
+      entry.verified = true;
+      console.log(`✅ [비밀번호 재설정 인증 성공] 아이디: ${cleanId}`);
+      return res.json({ success: true, verified: true, message: '인증이 완료되었습니다.' });
+    }
+
+    return res.status(400).json({ success: false, verified: false, error: '인증번호가 일치하지 않습니다.' });
+  } catch (err) {
+    console.error('❌ [비밀번호 재설정 코드 검증 에러]:', err);
+    return res.status(500).json({ success: false, verified: false, error: '인증번호 검증 중 오류가 발생했습니다.' });
+  }
+});
+
+// ─── 4. 비밀번호 재설정 - 새 비밀번호 등록 API ───
+router.post('/password-reset', async (req, res) => {
+  try {
+    const { loginId, code, newPassword } = req.body;
+    if (!loginId || !code || !newPassword) {
+      return res.status(400).json({ success: false, error: '아이디, 인증코드, 새 비밀번호를 모두 입력해주세요.' });
+    }
+
+    if (!process.env.DATABASE_URL) {
+      return res.status(503).json({ success: false, error: '데이터베이스 연결이 설정되지 않았습니다.' });
+    }
+
+    const cleanId = String(loginId).trim();
+    const cleanIdKey = cleanId.toLowerCase();
+    const cleanCode = String(code).trim();
+    const entry = passwordResetCodes.get(cleanIdKey);
+
+    const isValidCode = entry && (entry.verified || entry.code === cleanCode);
+    if (!isValidCode) {
+      return res.status(400).json({ success: false, error: '인증번호 검증을 먼저 완료해주세요.' });
+    }
+
+    const newPasswordHash = crypto.createHash('sha256').update(String(newPassword)).digest('hex');
+
+    const updateResult = await pool.query(`
+      UPDATE user_profiles 
+      SET password_hash = $1, updated_at = CURRENT_TIMESTAMP
+      WHERE login_id = $2 OR email = $2;
+    `, [newPasswordHash, cleanId]);
+
+    passwordResetCodes.delete(cleanIdKey);
+    console.log(`✅ [비밀번호 재설정 완료] 아이디: ${cleanId}, 업데이트 행: ${updateResult.rowCount}`);
+
+    return res.json({
+      success: true,
+      message: '비밀번호가 성공적으로 재설정되었습니다. 새 비밀번호로 로그인해주세요.'
+    });
+  } catch (err) {
+    console.error('❌ [비밀번호 재설정 에러]:', err);
+    return res.status(500).json({ success: false, error: '비밀번호 재설정 중 오류가 발생했습니다.' });
+  }
+});
+
 // 일반 아이디/비밀번호 로그인 API (모든 기기 동기화)
 router.post('/login', async (req, res) => {
   try {
