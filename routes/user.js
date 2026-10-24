@@ -19,7 +19,7 @@ function toUuid(id) {
   ].join('-');
 }
 
-// GET /api/user/profile — 사용자 프로필 조회
+// GET /api/user/profile — 사용자 프로필 조회 (UUID, loginId, email 지원)
 router.get('/profile', async (req, res) => {
   try {
     const userId = req.query.userId || req.headers['x-user-id'];
@@ -31,16 +31,28 @@ router.get('/profile', async (req, res) => {
       return res.status(503).json({ success: false, error: 'DB가 설정되지 않았습니다.' });
     }
 
-    const validUserId = toUuid(userId);
-    const result = await pool.query('SELECT * FROM user_profiles WHERE id = $1', [validUserId]);
+    const cleanId = String(userId).trim();
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    let result;
+    if (uuidRegex.test(cleanId)) {
+      result = await pool.query('SELECT * FROM user_profiles WHERE id = $1', [cleanId]);
+    } else {
+      result = await pool.query('SELECT * FROM user_profiles WHERE login_id = $1 OR email = $1', [cleanId]);
+    }
+
     if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: '프로필을 찾을 수 없습니다.' });
+      const hashedUuid = toUuid(cleanId);
+      result = await pool.query('SELECT * FROM user_profiles WHERE id = $1', [hashedUuid]);
+      if (result.rows.length === 0) {
+        return res.status(404).json({ success: false, error: '프로필을 찾을 수 없습니다.' });
+      }
     }
 
     const profileRow = result.rows[0];
+    const realUserId = profileRow.id;
     const medResult = await pool.query(
       'SELECT id, name, ingredient_name, timing, caution_note, dur_warning_tags FROM user_medications WHERE user_id = $1 ORDER BY created_at ASC',
-      [validUserId]
+      [realUserId]
     );
     const medicationObjects = medResult.rows.map((r) => ({
       id: r.id,
@@ -67,7 +79,11 @@ router.get('/profile', async (req, res) => {
       : '1970-01-01';
 
     const profileData = {
+      id: profileRow.id,
       userId: profileRow.id,
+      supabaseUserId: profileRow.id,
+      loginId: profileRow.login_id || cleanId,
+      email: profileRow.email,
       userName: profileRow.user_name,
       birthDate: formattedBirthDate,
       age: profileRow.age,
@@ -113,7 +129,19 @@ router.put('/profile', async (req, res) => {
       return res.status(400).json({ success: false, error: 'userId가 필요합니다.' });
     }
 
-    const validUserId = toUuid(targetUserId);
+    const cleanId = String(targetUserId).trim();
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    let validUserId = null;
+    if (uuidRegex.test(cleanId)) {
+      validUserId = cleanId;
+    } else {
+      const userCheck = await pool.query('SELECT id FROM user_profiles WHERE login_id = $1 OR email = $1 LIMIT 1', [cleanId]);
+      if (userCheck.rows.length > 0) {
+        validUserId = userCheck.rows[0].id;
+      } else {
+        validUserId = toUuid(cleanId);
+      }
+    }
     const finalUserName = name || userName || '소요 여행자';
     const finalBirthDateRaw = birth || birthDate || '1970-01-01';
     const formattedBirthDate = String(finalBirthDateRaw).split('T')[0];
@@ -186,7 +214,9 @@ router.put('/profile', async (req, res) => {
       : finalMedications.map((m) => enrichMedication(m)).filter(Boolean);
 
     const profileData = {
+      id: validUserId,
       userId: validUserId,
+      supabaseUserId: validUserId,
       userName: finalUserName,
       birthDate: formattedBirthDate,
       age: calculatedAge,

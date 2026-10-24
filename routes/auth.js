@@ -242,7 +242,9 @@ router.post('/login', async (req, res) => {
       : (userRow.chronic_conditions ? String(userRow.chronic_conditions).split(', ') : []);
 
     const profileData = {
+      id: userRow.id,
       userId: userRow.id,
+      supabaseUserId: userRow.id,
       loginId: userRow.login_id || cleanId,
       userName: userRow.user_name,
       email: userRow.email,
@@ -299,11 +301,30 @@ router.post('/profile', async (req, res) => {
       return res.status(400).json({ error: '이름과 생년월일은 필수 입력값입니다.' });
     }
 
-    if (!userId) {
-      return res.status(400).json({ error: '사용자 식별자(userId)가 필요합니다.' });
+    const cleanLoginId = loginId ? String(loginId).trim() : null;
+    const cleanEmail = email ? String(email).trim() : null;
+    const cleanRawId = userId ? String(userId).trim() : null;
+
+    if (!cleanRawId && !cleanLoginId && !cleanEmail) {
+      return res.status(400).json({ error: '사용자 식별자(userId 또는 loginId)가 필요합니다.' });
     }
 
-    const validUserId = toUuid(userId);
+    let validUserId = null;
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (cleanRawId && uuidRegex.test(cleanRawId)) {
+      validUserId = cleanRawId;
+    } else if (cleanLoginId || cleanEmail) {
+      const existRes = await pool.query(
+        'SELECT id FROM user_profiles WHERE login_id = $1 OR email = $2 LIMIT 1',
+        [cleanLoginId || '', cleanEmail || '']
+      );
+      if (existRes.rows.length > 0) {
+        validUserId = existRes.rows[0].id;
+      }
+    }
+    if (!validUserId) {
+      validUserId = toUuid(cleanRawId || cleanLoginId || cleanEmail);
+    }
     const passwordHash = password ? crypto.createHash('sha256').update(String(password)).digest('hex') : null;
 
     // PostgreSQL text[] 배열 타입 준수
@@ -392,7 +413,11 @@ router.post('/profile', async (req, res) => {
     const finalReturnMeds = finalMedications.map((m) => enrichMedication(m)).filter(Boolean);
 
     const profileData = {
+      id: validUserId,
       userId: validUserId,
+      supabaseUserId: validUserId,
+      loginId: cleanLoginId || null,
+      email: cleanEmail || null,
       userName: finalName,
       birthDate: formattedBirthDate,
       age: calculatedAge,
@@ -417,7 +442,7 @@ router.post('/profile', async (req, res) => {
   }
 });
 
-// AWS RDS 사용자 프로필 조회 (마이페이지 및 로그인 연동)
+// AWS RDS / Supabase 사용자 프로필 조회 (마이페이지 및 로그인 연동 — UUID, loginId, email 모두 완벽 지원)
 router.get('/profile/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -425,16 +450,28 @@ router.get('/profile/:userId', async (req, res) => {
       return res.status(503).json({ success: false, error: 'DB가 설정되지 않았습니다.' });
     }
 
-    const validUserId = toUuid(userId);
-    const result = await pool.query('SELECT * FROM user_profiles WHERE id = $1', [validUserId]);
+    const cleanId = String(userId || '').trim();
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    let result;
+    if (uuidRegex.test(cleanId)) {
+      result = await pool.query('SELECT * FROM user_profiles WHERE id = $1', [cleanId]);
+    } else {
+      result = await pool.query('SELECT * FROM user_profiles WHERE login_id = $1 OR email = $1', [cleanId]);
+    }
+
     if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: '프로필을 찾을 수 없습니다.' });
+      const hashedUuid = toUuid(cleanId);
+      result = await pool.query('SELECT * FROM user_profiles WHERE id = $1', [hashedUuid]);
+      if (result.rows.length === 0) {
+        return res.status(404).json({ success: false, error: '프로필을 찾을 수 없습니다.' });
+      }
     }
 
     const profileRow = result.rows[0];
+    const realUserId = profileRow.id;
     const medResult = await pool.query(
       'SELECT id, name, ingredient_name, timing, caution_note, dur_warning_tags FROM user_medications WHERE user_id = $1 ORDER BY created_at ASC',
-      [validUserId]
+      [realUserId]
     );
     const medicationObjects = medResult.rows.map((r) => ({
       id: r.id,
@@ -461,7 +498,11 @@ router.get('/profile/:userId', async (req, res) => {
       : '1970-01-01';
 
     const profileData = {
+      id: profileRow.id,
       userId: profileRow.id,
+      supabaseUserId: profileRow.id,
+      loginId: profileRow.login_id || cleanId,
+      email: profileRow.email,
       userName: profileRow.user_name,
       birthDate: formattedBirthDate,
       age: profileRow.age,
