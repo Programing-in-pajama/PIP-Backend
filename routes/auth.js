@@ -527,17 +527,10 @@ router.get('/profile/:userId', async (req, res) => {
 
 // Render 환경 설정 진단용 엔드포인트
 router.get('/diagnostic', (req, res) => {
-  const rawCid = process.env.NAVER_CLIENT_ID || '';
-  const rawCsec = process.env.NAVER_CLIENT_SECRET || '';
   return res.json({
     status: 'ok',
-    hasCid: !!rawCid,
-    cidLength: rawCid.length,
-    cidCodes: rawCid.split('').map(c => c.charCodeAt(0)),
-    cidString: rawCid,
-    hasCsec: !!rawCsec,
-    csecLength: rawCsec.length,
-    csecCodes: rawCsec.split('').map(c => c.charCodeAt(0)),
+    hasCid: !!process.env.NAVER_CLIENT_ID,
+    hasCsec: !!process.env.NAVER_CLIENT_SECRET,
     serverTime: new Date().toISOString()
   });
 });
