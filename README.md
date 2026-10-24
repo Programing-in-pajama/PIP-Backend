@@ -8,6 +8,16 @@ Node.js + Express API 서버입니다. 프론트엔드: [programing-in-pajama](h
 
 ## 🚀 개발 및 구현 진행 상황 (2026-10-24 최신)
 
+### ✅ 마이페이지 회원정보 및 기저질환 DB(Supabase) 실시간 저장·업데이트 연동 완료
+1. **프로필 저장/수정 API 호환성 보강 (`routes/auth.js`, `routes/user.js`)**:
+   - `POST /api/auth/profile` 및 `PUT /api/user/profile`에서 클라이언트 요청 파라미터 유연화:
+     - 이름(`name` / `userName`), 생년월일(`birth` / `birthDate`), 기저질환(`diseaseIds` / `chronicConditions`) 양방향 호환 지원
+   - PostgreSQL `ON CONFLICT (id) DO UPDATE` 쿼리를 통해 마이페이지에서 정보 수정 시 Supabase `user_profiles` 테이블의 기존 레코드를 즉각 갱신(`updated_at` 타임스탬프 동기화).
+2. **프로필 조회 API 최적화 (`routes/auth.js`, `routes/user.js`)**:
+   - `GET /api/auth/profile/:userId` 및 `GET /api/user/profile`: DB에서 최신 회원정보, 기저질환 배열, 복용 약물 정보를 조회하여 프론트엔드로 전달.
+3. **실제 Supabase DB 실시간 연동 테스트 및 무결성 검증**:
+   - 마이페이지 이름 수정(`박지원` ↔ `박지우`) 및 기저질환 다중 선택/초기화 시 Supabase `user_profiles`에 실시간으로 오차 없이 동기화됨을 확인.
+
 ### ✅ 네이버 소셜 로그인 및 데이터베이스(Supabase) 연동 완료
 1. **OAuth 2.0 Authorization Code Flow 백엔드 파이프라인 완성**:
    - `POST /api/auth/naver`: 인가코드(`code`) 및 `state` 수신 ➔ 네이버 토큰 서버 통신 ➔ 네이버 프로필 API(`https://openapi.naver.com/v1/nid/me`) 조회

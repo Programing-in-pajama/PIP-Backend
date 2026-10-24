@@ -198,7 +198,9 @@ router.post('/profile', async (req, res) => {
     const {
       userId,
       name,
+      userName,
       birth,
+      birthDate,
       allergies = [],
       diseases = [],
       diseaseIds = [],
@@ -208,7 +210,10 @@ router.post('/profile', async (req, res) => {
       noMedication = false
     } = req.body;
 
-    if (!name || !birth) {
+    const finalName = (name || userName || '').trim();
+    const finalBirth = birth || birthDate;
+
+    if (!finalName || !finalBirth) {
       return res.status(400).json({ error: '이름과 생년월일은 필수 입력값입니다.' });
     }
 
@@ -227,8 +232,8 @@ router.post('/profile', async (req, res) => {
 
     // 생년월일 기반 나이 계산
     let calculatedAge = 50;
-    if (birth) {
-      const birthYear = new Date(birth).getFullYear();
+    if (finalBirth) {
+      const birthYear = new Date(finalBirth).getFullYear();
       if (!isNaN(birthYear)) {
         calculatedAge = Math.max(0, new Date().getFullYear() - birthYear);
       }
@@ -256,8 +261,8 @@ router.post('/profile', async (req, res) => {
         `;
         await pool.query(profileQuery, [
           validUserId,
-          name,
-          birth,
+          finalName,
+          finalBirth,
           calculatedAge,
           finalDiseases,
           finalAllergies,
@@ -284,7 +289,7 @@ router.post('/profile', async (req, res) => {
         }
 
         savedInDb = true;
-        console.log(`✅ [Supabase DB] 사용자 프로필 및 복용약물 저장 완료: ${name} (${validUserId}) - 약물 ${enrichedMedList.length}건`);
+        console.log(`✅ [Supabase DB] 사용자 프로필 및 복용약물 저장 완료: ${finalName} (${validUserId}) - 약물 ${enrichedMedList.length}건`);
       } catch (dbErr) {
         console.error('❌ [Supabase DB] 프로필 저장 오류:', dbErr.message);
         return res.status(500).json({ error: `데이터베이스 저장 중 오류가 발생했습니다: ${dbErr.message}` });
@@ -293,12 +298,12 @@ router.post('/profile', async (req, res) => {
       console.warn('⚠️ [Supabase DB] DATABASE_URL 미설정으로 DB 저장을 건너뜁니다.');
     }
 
-    const formattedBirthDate = String(birth).split('T')[0];
+    const formattedBirthDate = String(finalBirth).split('T')[0];
     const finalReturnMeds = finalMedications.map((m) => enrichMedication(m)).filter(Boolean);
 
     const profileData = {
       userId: validUserId,
-      userName: name,
+      userName: finalName,
       birthDate: formattedBirthDate,
       age: calculatedAge,
       allergies: finalAllergies,
