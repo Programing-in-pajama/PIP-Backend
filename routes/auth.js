@@ -445,10 +445,10 @@ router.post('/login', async (req, res) => {
     const cleanPw = String(password);
     const passwordHash = crypto.createHash('sha256').update(cleanPw).digest('hex');
 
-    // 1. user_profiles 에서 login_id 또는 email 로 계정 조회 (최신순 정렬)
+    // 1. user_profiles 에서 login_id 또는 email 로 계정 조회 (최신순 정렬, 대소문자 무관)
     const userResult = await pool.query(`
       SELECT * FROM user_profiles 
-      WHERE login_id = $1 OR email = $1 
+      WHERE LOWER(login_id) = LOWER($1) OR LOWER(email) = LOWER($1) 
       ORDER BY updated_at DESC;
     `, [cleanId]);
 
@@ -555,17 +555,31 @@ router.post('/profile', async (req, res) => {
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     let existingUser = null;
 
-    // 1. 기존 유저 정보 조회 (id, login_id, email 복합 매칭)
+    // 1. 기존 유저 정보 조회 (id, login_id, email 복합 매칭 — UUID 타입 에러 원천 방지)
     if (process.env.DATABASE_URL) {
       try {
-        const checkRes = await pool.query(
-          `SELECT * FROM user_profiles 
-           WHERE id = $1 
-              OR ($2 <> '' AND login_id = $2)
-              OR ($3 <> '' AND email = $3)
-           ORDER BY updated_at DESC LIMIT 1`,
-          [cleanRawId || '', cleanLoginId || '', cleanEmail || '']
-        );
+        const isUuid = cleanRawId && uuidRegex.test(cleanRawId);
+        let checkRes;
+        if (isUuid) {
+          checkRes = await pool.query(
+            `SELECT * FROM user_profiles 
+             WHERE id = $1 
+                OR ($2 <> '' AND login_id = $2)
+                OR ($3 <> '' AND email = $3)
+             ORDER BY updated_at DESC LIMIT 1`,
+            [cleanRawId, cleanLoginId || '', cleanEmail || '']
+          );
+        } else {
+          const hashedUuid = toUuid(cleanRawId || cleanLoginId || cleanEmail);
+          checkRes = await pool.query(
+            `SELECT * FROM user_profiles 
+             WHERE id = $1
+                OR ($2 <> '' AND login_id = $2)
+                OR ($3 <> '' AND email = $3)
+             ORDER BY updated_at DESC LIMIT 1`,
+            [hashedUuid, cleanLoginId || cleanRawId || '', cleanEmail || '']
+          );
+        }
         if (checkRes.rows.length > 0) {
           existingUser = checkRes.rows[0];
         }

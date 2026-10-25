@@ -148,14 +148,28 @@ router.put('/profile', async (req, res) => {
 
     if (process.env.DATABASE_URL) {
       try {
-        const checkRes = await pool.query(
-          `SELECT * FROM user_profiles 
-           WHERE id = $1 
-              OR ($2 <> '' AND login_id = $2) 
-              OR ($3 <> '' AND email = $3)
-           ORDER BY updated_at DESC LIMIT 1`,
-          [cleanId || '', cleanId || '', cleanEmail || '']
-        );
+        const isUuid = cleanId && uuidRegex.test(cleanId);
+        let checkRes;
+        if (isUuid) {
+          checkRes = await pool.query(
+            `SELECT * FROM user_profiles 
+             WHERE id = $1 
+                OR ($2 <> '' AND login_id = $2) 
+                OR ($3 <> '' AND email = $3)
+             ORDER BY updated_at DESC LIMIT 1`,
+            [cleanId, cleanId, cleanEmail || '']
+          );
+        } else {
+          const hashedUuid = toUuid(cleanId || cleanEmail);
+          checkRes = await pool.query(
+            `SELECT * FROM user_profiles 
+             WHERE id = $1 
+                OR ($2 <> '' AND login_id = $2) 
+                OR ($3 <> '' AND email = $3)
+             ORDER BY updated_at DESC LIMIT 1`,
+            [hashedUuid, cleanId || '', cleanEmail || '']
+          );
+        }
         if (checkRes.rows.length > 0) {
           existingUser = checkRes.rows[0];
         }

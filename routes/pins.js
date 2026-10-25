@@ -167,7 +167,9 @@ router.post('/folders', async (req, res) => {
       return res.status(409).json({ success: false, error: '같은 이름의 폴더가 이미 있습니다.' });
     }
 
-    const newFolderId = crypto.randomUUID();
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const clientFolderId = req.body.id && uuidRegex.test(req.body.id) ? req.body.id : null;
+    const newFolderId = clientFolderId || crypto.randomUUID();
     const countRes = await pool.query('SELECT COUNT(*) FROM pin_folders WHERE user_id = $1', [userUuid]);
     const nextOrder = parseInt(countRes.rows[0].count, 10) || 0;
 
@@ -204,27 +206,37 @@ router.delete('/folders/:id', async (req, res) => {
     }
 
     const userUuid = await resolveUserUuid(rawUserId);
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-    // 기본 '내 핀' 폴더(sort_order: 0)는 삭제 불가 방어
-    const checkFolder = await pool.query(
-      'SELECT id, folder_name, sort_order FROM pin_folders WHERE id = $1 AND user_id = $2',
-      [folderId, userUuid]
-    );
+    // UUID 일치 또는 폴더명 일치로 안전하게 조회 (타입 에러 방지)
+    let checkFolder;
+    if (uuidRegex.test(folderId)) {
+      checkFolder = await pool.query(
+        'SELECT id, folder_name, sort_order FROM pin_folders WHERE id = $1 AND user_id = $2',
+        [folderId, userUuid]
+      );
+    } else {
+      checkFolder = await pool.query(
+        'SELECT id, folder_name, sort_order FROM pin_folders WHERE folder_name = $1 AND user_id = $2',
+        [folderId, userUuid]
+      );
+    }
 
     if (checkFolder.rows.length === 0) {
       return res.status(404).json({ success: false, error: '존재하지 않는 폴더입니다.' });
     }
 
-    if (checkFolder.rows[0].sort_order === 0 || checkFolder.rows[0].folder_name === '내 핀') {
+    const targetRow = checkFolder.rows[0];
+    if (targetRow.sort_order === 0 || targetRow.folder_name === '내 핀') {
       return res.status(400).json({ success: false, error: '기본 폴더는 삭제할 수 없습니다.' });
     }
 
     // 연관된 saved_routes 삭제
-    await pool.query('DELETE FROM saved_routes WHERE folder_id = $1 AND user_id = $2', [folderId, userUuid]);
+    await pool.query('DELETE FROM saved_routes WHERE folder_id = $1 AND user_id = $2', [targetRow.id, userUuid]);
     // 폴더 삭제
-    await pool.query('DELETE FROM pin_folders WHERE id = $1 AND user_id = $2', [folderId, userUuid]);
+    await pool.query('DELETE FROM pin_folders WHERE id = $1 AND user_id = $2', [targetRow.id, userUuid]);
 
-    console.log(`✅ [핀 폴더 삭제 완료]: ${checkFolder.rows[0].folder_name} (${folderId})`);
+    console.log(`✅ [핀 폴더 삭제 완료]: ${targetRow.folder_name} (${targetRow.id})`);
     return res.json({ success: true, message: '폴더가 삭제되었습니다.' });
   } catch (err) {
     console.error('❌ [DELETE /api/pins/folders 에러]:', err);
@@ -242,22 +254,37 @@ router.post('/routes', async (req, res) => {
     }
 
     const userUuid = await resolveUserUuid(rawUserId);
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-    // 대상 폴더 확인 (지정되지 않거나 기본일 경우 sort_order 0 기본 폴더)
+    // 대상 폴더 확인 (지정되지 않거나 비-UUID 일 경우 이름 조회 또는 sort_order 0 기본 폴더)
     let targetFolderId = folderId;
-    if (!targetFolderId || targetFolderId === 'default') {
-      const defRes = await pool.query(
-        'SELECT id FROM pin_folders WHERE user_id = $1 ORDER BY sort_order ASC LIMIT 1',
-        [userUuid]
-      );
-      if (defRes.rows.length > 0) {
-        targetFolderId = defRes.rows[0].id;
-      } else {
-        targetFolderId = crypto.randomUUID();
-        await pool.query(
-          "INSERT INTO pin_folders (id, user_id, folder_name, sort_order) VALUES ($1, $2, '내 핀', 0)",
-          [targetFolderId, userUuid]
+    if (!targetFolderId || targetFolderId === 'default' || !uuidRegex.test(targetFolderId)) {
+      let foundFolder = null;
+      if (targetFolderId && targetFolderId !== 'default') {
+        const byName = await pool.query(
+          'SELECT id FROM pin_folders WHERE user_id = $1 AND folder_name = $2 LIMIT 1',
+          [userUuid, String(targetFolderId)]
         );
+        if (byName.rows.length > 0) {
+          foundFolder = byName.rows[0].id;
+        }
+      }
+      if (foundFolder) {
+        targetFolderId = foundFolder;
+      } else {
+        const defRes = await pool.query(
+          'SELECT id FROM pin_folders WHERE user_id = $1 ORDER BY sort_order ASC LIMIT 1',
+          [userUuid]
+        );
+        if (defRes.rows.length > 0) {
+          targetFolderId = defRes.rows[0].id;
+        } else {
+          targetFolderId = crypto.randomUUID();
+          await pool.query(
+            "INSERT INTO pin_folders (id, user_id, folder_name, sort_order) VALUES ($1, $2, '내 핀', 0)",
+            [targetFolderId, userUuid]
+          );
+        }
       }
     }
 
