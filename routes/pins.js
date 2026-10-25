@@ -318,24 +318,38 @@ router.post('/routes', async (req, res) => {
 });
 
 // ─── 5. 핀 삭제 API ───
-// DELETE /api/pins/folders/:folderId/routes/:routeId?userId=...
+// DELETE /api/pins/folders/:folderId/routes/:routeId?userId=...&title=...
 router.delete('/folders/:folderId/routes/:routeId', async (req, res) => {
   try {
     const { folderId, routeId } = req.params;
     const rawUserId = req.query.userId || req.body.userId || req.headers['x-user-id'];
-    if (!rawUserId || !routeId) {
-      return res.status(400).json({ success: false, error: 'userId와 routeId 가 필요합니다.' });
+    const title = req.query.title || req.body.title || null;
+    if (!rawUserId) {
+      return res.status(400).json({ success: false, error: 'userId 가 필요합니다.' });
     }
 
     const userUuid = await resolveUserUuid(rawUserId);
-    const routeUuid = toUuid(routeId);
+    const routeUuid = routeId && routeId !== 'by-title' ? toUuid(routeId) : null;
 
-    const delRes = await pool.query(`
-      DELETE FROM saved_routes 
-      WHERE user_id = $1 AND (id = $2::uuid OR id = $3::uuid);
-    `, [userUuid, routeUuid, toUuid(routeId)]);
+    let delRes;
+    if (routeUuid && title) {
+      delRes = await pool.query(`
+        DELETE FROM saved_routes 
+        WHERE user_id = $1 AND (id = $2::uuid OR title = $3);
+      `, [userUuid, routeUuid, title]);
+    } else if (routeUuid) {
+      delRes = await pool.query(`
+        DELETE FROM saved_routes 
+        WHERE user_id = $1 AND id = $2::uuid;
+      `, [userUuid, routeUuid]);
+    } else if (title) {
+      delRes = await pool.query(`
+        DELETE FROM saved_routes 
+        WHERE user_id = $1 AND title = $2;
+      `, [userUuid, title]);
+    }
 
-    console.log(`✅ [핀 삭제 완료]: routeId ${routeId} (삭제된 행: ${delRes.rowCount})`);
+    console.log(`✅ [핀 삭제 완료]: routeId ${routeId}, title: ${title}`);
     return res.json({ success: true, message: '핀이 삭제되었습니다.' });
   } catch (err) {
     console.error('❌ [DELETE /api/pins/.../routes 에러]:', err);
