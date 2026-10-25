@@ -56,7 +56,7 @@ function getEmailTransporter() {
   return null;
 }
 
-// 이메일 인증 코드 발송 (Supabase Auth OTP 우선 발송 - VitalRoot 방식, Render 포트 차단 우회)
+// 이메일 인증 코드 발송
 router.post('/email/send-code', async (req, res) => {
   try {
     const { email, type = 'signup' } = req.body;
@@ -66,18 +66,31 @@ router.post('/email/send-code', async (req, res) => {
 
     const cleanEmail = email.toLowerCase().trim();
 
-    // 회원가입(type === 'signup') 시 이미 가입된 이메일인지 DB 중복 검사
+    // 회원가입(type === 'signup') 시 이미 가입 완료된 활성 계정인지 DB 중복 검사
     if (type === 'signup' && pool) {
       try {
-        const existingUser = await pool.query(`
-          SELECT id, login_id, email, user_name FROM user_profiles
+        const existingUsers = await pool.query(`
+          SELECT id, login_id, email, user_name, password_hash, provider, birth_date
+          FROM user_profiles
           WHERE LOWER(TRIM(email)) = $1
-          ORDER BY updated_at DESC
-          LIMIT 1;
+          ORDER BY updated_at DESC;
         `, [cleanEmail]);
 
-        if (existingUser.rows.length > 0) {
-          console.warn(`⚠️ [회원가입 이메일 중복 차단]: 이미 가입된 이메일입니다. (${cleanEmail})`);
+        // 실제 가입이 완료된 계정만 중복 차단:
+        // 1) 비밀번호(password_hash)와 로그인 아이디(login_id)가 등록된 일반 계정
+        // 2) 실제 온보딩(기본 1970-01-01 더미 생년월일 외)을 완료한 소셜 계정
+        const completedUser = existingUsers.rows.find((user) => {
+          const hasPassword = Boolean(user.password_hash && String(user.password_hash).trim().length > 0);
+          const hasLoginId = Boolean(user.login_id && String(user.login_id).trim().length > 0);
+          const bDate = user.birth_date ? String(user.birth_date).split('T')[0] : '';
+          const hasRealSocialProfile = (user.provider && user.provider !== 'local') &&
+                                       bDate && !bDate.startsWith('1970-01-01') &&
+                                       user.user_name && user.user_name !== '소요 여행자';
+          return (hasPassword && hasLoginId) || hasRealSocialProfile;
+        });
+
+        if (completedUser) {
+          console.warn(`⚠️ [회원가입 이메일 중복 차단]: 이미 가입 완료된 계정입니다. (${cleanEmail})`);
           return res.status(409).json({
             success: false,
             alreadyRegistered: true,
@@ -86,12 +99,25 @@ router.post('/email/send-code', async (req, res) => {
             error: '이미 회원가입이 되어 있는 이메일입니다. 아이디와 비밀번호 찾기를 이용해 주세요.'
           });
         }
+
+        // 미완료/이탈된 임시 레코드(비밀번호 및 유효 로그인 아이디 없음)는
+        // 재가입 시 충돌하지 않도록 깔끔하게 정리
+        const abandonedRows = existingUsers.rows.filter(u => !u.password_hash || !u.login_id);
+        if (abandonedRows.length > 0) {
+          console.log(`🧹 [미완료 가입 이탈 정리] ${cleanEmail}의 미완료 임시 레코드 ${abandonedRows.length}건을 정리하여 원활한 재가입을 허용합니다.`);
+          await pool.query(`
+            DELETE FROM user_profiles
+            WHERE LOWER(TRIM(email)) = $1
+              AND (password_hash IS NULL OR TRIM(password_hash) = '')
+              AND (login_id IS NULL OR TRIM(login_id) = '');
+          `, [cleanEmail]);
+        }
       } catch (dbErr) {
         console.warn('⚠️ [이메일 중복 확인 DB 조회 예외]:', dbErr.message);
       }
     }
 
-    // 1. 만약을 대비한 암호학적 6자리 로컬 난수 백업 생성 (5분 유효)
+    // 1. 암호학적 6자리 로컬 난수 생성 (5분 유효)
     const localCode = crypto.randomInt(100000, 1000000).toString();
     const expiresAt = Date.now() + 5 * 60 * 1000;
 
@@ -101,40 +127,72 @@ router.post('/email/send-code', async (req, res) => {
       attempts: 0
     });
 
-    // 2. Supabase Auth 이메일 OTP 발송 시도 (HTTPS 443 API를 통해 Supabase 클라우드가 메일 직접 전송)
-    if (supabase) {
+    let emailSent = false;
+
+    // 2. Nodemailer SMTP 발송 시도 (설정된 경우)
+    const transporter = getEmailTransporter();
+    if (transporter) {
+      try {
+        console.log(`📧 [Nodemailer] 이메일 발송 시도: ${cleanEmail}`);
+        await transporter.sendMail({
+          from: process.env.SMTP_FROM || `"SOYO (소요)" <${process.env.SMTP_USER || process.env.SMTP_EMAIL}>`,
+          to: cleanEmail,
+          subject: '[SOYO] 이메일 인증번호 안내',
+          html: `
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background-color: #ffffff;">
+              <h2 style="color: #15803d; margin-top: 0;">🌿 SOYO (소요) 본인 확인 인증</h2>
+              <p style="color: #374151; font-size: 15px; line-height: 1.6;">
+                안녕하세요! 맞춤형 식이 & 산책 웰니스 플랫폼 <strong>소요(SOYO)</strong>입니다.<br/>
+                요청하신 이메일 인증번호는 아래와 같습니다.
+              </p>
+              <div style="background-color: #f0fdf4; border: 2px solid #86efac; border-radius: 8px; padding: 18px; text-align: center; margin: 24px 0;">
+                <span style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #166534;">${localCode}</span>
+              </div>
+              <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+                * 본 인증번호는 <strong>5분간</strong> 유효합니다.<br/>
+                * 본인이 요청하지 않은 경우 본 메일을 무시하셔도 됩니다.
+              </p>
+            </div>
+          `
+        });
+        emailSent = true;
+        console.log(`✅ [Nodemailer] 이메일 발송 성공: ${cleanEmail}`);
+      } catch (smtpErr) {
+        console.warn('⚠️ [Nodemailer 발송 실패, Supabase/로컬 모드 가동]:', smtpErr.message);
+      }
+    }
+
+    // 3. Supabase Auth 이메일 OTP 발송 시도 (Nodemailer 미발송 시)
+    if (!emailSent && supabase) {
       try {
         console.log(`🚀 [Supabase Auth] 이메일 OTP 발송 요청: ${cleanEmail}`);
         const { error: sbError } = await supabase.auth.signInWithOtp({
           email: cleanEmail,
           options: {
-            shouldCreateUser: true
+            shouldCreateUser: false
           }
         });
 
         if (sbError) {
-          console.warn('⚠️ [Supabase Auth OTP 발송 실패, 로컬 백업 모드 가동]:', sbError.message);
+          console.warn('⚠️ [Supabase Auth OTP 발송 실패/제한]:', sbError.message);
         } else {
-          console.log(`✅ [Supabase Auth] 이메일 OTP 발송 성공: ${cleanEmail}, 인증코드: [${localCode}]`);
-          return res.json({
-            success: true,
-            code: localCode,
-            debugCode: localCode,
-            message: `인증코드가 발송되었습니다. [인증번호: ${localCode}] (메일함 또는 안내된 번호를 입력해주세요)`
-          });
+          emailSent = true;
+          console.log(`✅ [Supabase Auth] 이메일 OTP 발송 성공: ${cleanEmail}`);
         }
       } catch (sbCatchErr) {
         console.warn('⚠️ [Supabase Auth 호출 예외]:', sbCatchErr.message);
       }
     }
 
-    // 3. 만약 Supabase 설정 미비/제한 시 화면 차단 방지를 위한 콘솔 백업 Fallback
-    console.log(`📨 [인증번호 콘솔 백업] 대상: ${cleanEmail}, 코드: [${localCode}] (유효시간: 5분)`);
+    console.log(`📨 [인증번호 발송 완료] 대상: ${cleanEmail}, 코드: [${localCode}] (발송 성공 여부: ${emailSent})`);
     return res.json({
       success: true,
       code: localCode,
       debugCode: localCode,
-      message: `인증코드가 발송되었습니다. [인증번호: ${localCode}] (안내된 번호를 입력해주세요)`
+      emailSent,
+      message: emailSent
+        ? '인증번호가 이메일로 발송되었습니다. 메일함을 확인해주세요.'
+        : `인증번호가 발송되었습니다. [인증번호: ${localCode}] (안내된 번호를 입력해주세요)`
     });
   } catch (err) {
     console.error('이메일 발송 라우트 에러:', err);
@@ -142,7 +200,7 @@ router.post('/email/send-code', async (req, res) => {
   }
 });
 
-// 이메일 인증 코드 검증 (Supabase Auth verifyOtp 우선 검증 및 로컬 백업 확인)
+// 이메일 인증 코드 검증 (로컬 인메모리 우선 검증 및 Supabase Auth 폴백)
 router.post('/email/verify-code', async (req, res) => {
   try {
     const { email, code } = req.body;
@@ -153,7 +211,29 @@ router.post('/email/verify-code', async (req, res) => {
     const cleanEmail = email.toLowerCase().trim();
     const cleanCode = String(code).trim();
 
-    // 1. Supabase Auth verifyOtp 검증 시도 (VitalRoot 방식)
+    // 1. 발급된 인증코드 즉시 검증 (빠른 응답)
+    const entry = emailVerificationCodes.get(cleanEmail);
+    if (entry) {
+      if (Date.now() > entry.expiresAt) {
+        emailVerificationCodes.delete(cleanEmail);
+        return res.status(400).json({ success: false, verified: false, error: '인증코드 유효시간(5분)이 만료되었습니다. 다시 발송해주세요.' });
+      }
+
+      if (entry.attempts >= 5) {
+        emailVerificationCodes.delete(cleanEmail);
+        return res.status(400).json({ success: false, verified: false, error: '인증 시도 횟수를 초과했습니다. 다시 발송해주세요.' });
+      }
+
+      entry.attempts += 1;
+
+      if (entry.code === cleanCode) {
+        emailVerificationCodes.delete(cleanEmail);
+        console.log(`✅ [이메일 인증 성공] 대상: ${cleanEmail}`);
+        return res.json({ success: true, verified: true, message: '이메일 인증이 완료되었습니다.' });
+      }
+    }
+
+    // 2. Supabase Auth verifyOtp 검증 시도 (Supabase 직접 발송 OTP 확인)
     if (supabase) {
       try {
         let sbRes = await supabase.auth.verifyOtp({
@@ -181,33 +261,9 @@ router.post('/email/verify-code', async (req, res) => {
             verified: true,
             message: '이메일 인증이 완료되었습니다.'
           });
-        } else {
-          console.warn('⚠️ [Supabase Auth OTP 검증 불일치]:', sbRes.error?.message);
         }
       } catch (sbVerifyErr) {
         console.warn('⚠️ [Supabase Auth 검증 예외]:', sbVerifyErr.message);
-      }
-    }
-
-    // 2. 로컬 인메모리 캐시 코드 검증 (폴백)
-    const entry = emailVerificationCodes.get(cleanEmail);
-    if (entry) {
-      if (Date.now() > entry.expiresAt) {
-        emailVerificationCodes.delete(cleanEmail);
-        return res.status(400).json({ success: false, verified: false, error: '인증코드 유효시간(5분)이 만료되었습니다. 다시 발송해주세요.' });
-      }
-
-      if (entry.attempts >= 5) {
-        emailVerificationCodes.delete(cleanEmail);
-        return res.status(400).json({ success: false, verified: false, error: '인증 시도 횟수를 초과했습니다. 다시 발송해주세요.' });
-      }
-
-      entry.attempts += 1;
-
-      if (entry.code === cleanCode) {
-        emailVerificationCodes.delete(cleanEmail);
-        console.log(`✅ [로컬 백업 이메일 인증 성공] 대상: ${cleanEmail}`);
-        return res.json({ success: true, verified: true, message: '이메일 인증이 완료되었습니다.' });
       }
     }
 
@@ -302,25 +358,62 @@ router.post('/password-reset/send-code', async (req, res) => {
       verified: false
     });
 
+    let emailSent = false;
+    const transporter = getEmailTransporter();
+    if (transporter) {
+      try {
+        console.log(`📧 [Nodemailer] 비밀번호 재설정 메일 발송 시도: ${userEmail}`);
+        await transporter.sendMail({
+          from: process.env.SMTP_FROM || `"SOYO (소요)" <${process.env.SMTP_USER || process.env.SMTP_EMAIL}>`,
+          to: userEmail,
+          subject: '[SOYO] 비밀번호 재설정 인증번호 안내',
+          html: `
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background-color: #ffffff;">
+              <h2 style="color: #15803d; margin-top: 0;">🌿 SOYO (소요) 비밀번호 재설정</h2>
+              <p style="color: #374151; font-size: 15px; line-height: 1.6;">
+                요청하신 비밀번호 재설정 인증번호입니다.
+              </p>
+              <div style="background-color: #f0fdf4; border: 2px solid #86efac; border-radius: 8px; padding: 18px; text-align: center; margin: 24px 0;">
+                <span style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #166534;">${localCode}</span>
+              </div>
+              <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+                * 본 인증번호는 <strong>5분간</strong> 유효합니다.
+              </p>
+            </div>
+          `
+        });
+        emailSent = true;
+        console.log(`✅ [Nodemailer] 비밀번호 재설정 메일 발송 성공: ${userEmail}`);
+      } catch (smtpErr) {
+        console.warn('⚠️ [Nodemailer 비밀번호 재설정 메일 발송 실패]:', smtpErr.message);
+      }
+    }
+
     // Supabase Auth 이메일 OTP 시도
-    if (supabase) {
+    if (!emailSent && supabase) {
       try {
         console.log(`🚀 [비밀번호 재설정] Supabase Auth OTP 발송 시도: ${userEmail}`);
-        await supabase.auth.signInWithOtp({
+        const { error: sbErr } = await supabase.auth.signInWithOtp({
           email: userEmail,
           options: { shouldCreateUser: false }
         });
+        if (!sbErr) {
+          emailSent = true;
+        }
       } catch (sbErr) {
         console.warn('⚠️ [비밀번호 재설정 Supabase OTP 예외]:', sbErr.message);
       }
     }
 
-    console.log(`📨 [비밀번호 재설정 인증코드 발송] 아이디: ${cleanId}, 이메일: ${userEmail}, 코드: [${localCode}]`);
+    console.log(`📨 [비밀번호 재설정 인증코드 발송] 아이디: ${cleanId}, 이메일: ${userEmail}, 코드: [${localCode}] (메일 발송 여부: ${emailSent})`);
     return res.json({
       success: true,
       code: localCode,
       debugCode: localCode,
-      message: '해당 아이디의 이메일로 인증번호를 발송했습니다.'
+      emailSent,
+      message: emailSent
+        ? '해당 아이디의 등록된 이메일로 인증번호를 발송했습니다.'
+        : `인증번호가 발송되었습니다. [인증번호: ${localCode}] (안내된 번호를 입력해주세요)`
     });
   } catch (err) {
     console.error('❌ [비밀번호 재설정 코드 발송 에러]:', err);
@@ -457,25 +550,25 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ success: false, error: '아이디/비밀번호를 확인하세요.' });
     }
 
-    // 비밀번호가 일치하는 행을 우선 탐색하고, 없으면 가장 최신 행을 검증 대상으로 선택
-    let userRow = userResult.rows.find(r => r.password_hash === passwordHash) || userResult.rows[0];
-
     // 2. 비밀번호 검증 (sha256 해시 검증)
-    if (userRow.password_hash && userRow.password_hash !== passwordHash) {
-      console.warn(`❌ [로그인 실패] 비밀번호 불일치: ${cleanId}`);
+    // 정확히 비밀번호 해시가 일치하는 행을 찾음 (미등록/임시 계정 임의 통과 차단)
+    const matchingUser = userResult.rows.find((r) => r.password_hash && r.password_hash === passwordHash);
+
+    if (!matchingUser) {
+      console.warn(`❌ [로그인 실패] 아이디/비밀번호 불일치: ${cleanId}`);
       return res.status(401).json({ success: false, error: '아이디/비밀번호를 확인하세요.' });
     }
 
-    // 비밀번호 일치 시(혹은 해시 누락 계정) 동일 계정들의 해시를 최신으로 동기화
-    if (!userRow.password_hash || userResult.rows.length > 1) {
-      try {
-        await pool.query(
-          'UPDATE user_profiles SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE login_id = $2 OR email = $3',
-          [passwordHash, userRow.login_id || cleanId, userRow.email || cleanId]
-        );
-      } catch (syncErr) {
-        console.warn('⚠️ [비밀번호 해시 동기화 예외]:', syncErr.message);
-      }
+    const userRow = matchingUser;
+
+    // 비밀번호 일치 확인 계정 최신 상태 유지
+    try {
+      await pool.query(
+        'UPDATE user_profiles SET updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+        [userRow.id]
+      );
+    } catch (syncErr) {
+      console.warn('⚠️ [계정 타임스탬프 갱신 예외]:', syncErr.message);
     }
 
     // 3. 복용 약물 목록 조회
@@ -816,24 +909,29 @@ router.get('/profile/:userId', async (req, res) => {
       const hashedUuid = toUuid(cleanId);
       result = await pool.query('SELECT * FROM user_profiles WHERE id = $1', [hashedUuid]);
       if (result.rows.length === 0) {
-        // 소셜 사용자 등 UUID로 조회되었으나 DB에 행이 없는 경우 기본 프로필 레코드 자동 생성(UPSERT)
-        if (uuidRegex.test(cleanId)) {
-          console.log(`🌱 [신규 소셜/유저 프로필 자동 초기화]: ${cleanId} (${queryEmail || '이메일 없음'})`);
-          try {
-            const initRes = await pool.query(`
-              INSERT INTO user_profiles (id, email, user_name, birth_date, age, chronic_conditions, allergies, has_medication, created_at, updated_at)
-              VALUES ($1, $2, '소요 여행자', '1970-01-01', 50, '{}', '{}', false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-              ON CONFLICT (id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
-              RETURNING *;
-            `, [cleanId, queryEmail]);
-            result = initRes;
-          } catch (initErr) {
-            console.warn('⚠️ [프로필 자동 생성 실패 fallback]:', initErr.message);
-            return res.status(404).json({ success: false, error: '프로필을 찾을 수 없습니다.' });
+        // 소셜 사용자 등 UUID로 조회되었으나 DB에 행이 아직 없는 경우:
+        // DB에 더미 행을 강제로 INSERT하지 않고 가상 기본 프로필을 안전하게 반환
+        console.log(`🌱 [신규 소셜/유저 프로필 감지 (DB 가상 프로필 반환)]: ${cleanId} (${queryEmail || '이메일 없음'})`);
+        return res.json({
+          success: true,
+          isNewUser: true,
+          profile: {
+            id: cleanId,
+            userId: cleanId,
+            supabaseUserId: cleanId,
+            loginId: cleanId.includes('@') ? cleanId : null,
+            userName: '소요 여행자',
+            email: queryEmail || (cleanId.includes('@') ? cleanId : null),
+            birthDate: '1970-01-01',
+            age: 50,
+            chronicConditions: [],
+            diseaseIds: [],
+            allergies: [],
+            medications: [],
+            medicationNames: [],
+            hasMedication: false
           }
-        } else {
-          return res.status(404).json({ success: false, error: '프로필을 찾을 수 없습니다.' });
-        }
+        });
       }
     }
 
