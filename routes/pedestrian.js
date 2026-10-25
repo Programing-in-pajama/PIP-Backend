@@ -549,7 +549,15 @@ const handleRecommend = async (req, res) => {
       (c) => !c.hasRestaurant || !c.restaurant || c.restaurant.grade !== 'red'
     );
     // 만약 모든 코스가 red일 경우에만 fallback으로 원본 유지, 그 외에는 안전 코스만 반환
-    const finalCourses = safeCourses.length > 0 ? safeCourses : courses;
+    const candidates = safeCourses.length > 0 ? safeCourses : courses;
+
+    // 🌿 가장 안전한 안심(green) 식당 코스를 1순위로 우선 정렬 (green > yellow > 기타)
+    const gradeScores = { green: 3, yellow: 2, red: 1 };
+    const finalCourses = [...candidates].sort((a, b) => {
+      const scoreA = a.restaurant ? (gradeScores[a.restaurant.grade] || 0) : 1.5;
+      const scoreB = b.restaurant ? (gradeScores[b.restaurant.grade] || 0) : 1.5;
+      return scoreB - scoreA;
+    });
 
     return res.json({
       success: true,
