@@ -428,7 +428,7 @@ const handleRecommend = async (req, res) => {
     if (minutes <= 15) {
       trailCandidates = [
         {
-          title: '역곡상상시장 문화길 (10분)',
+          title: '역곡상상시장 문화길',
           primaryRestId: COURSE_10_1_WITH_REST_META.restId,
           trailTarget: { lat: 37.48758, lng: 126.81291, name: '역곡상상시장' },
           withRest: {
@@ -447,7 +447,7 @@ const handleRecommend = async (req, res) => {
           features: ['역곡상상시장 아케이드', '보행자 우선도로', '안심 쉼터 2곳'],
         },
         {
-          title: '역곡남부 평탄 골목길 (12분)',
+          title: '역곡남부 평탄 골목길',
           primaryRestId: COURSE_10_2_WITH_REST_META.restId,
           trailTarget: { lat: 37.48355, lng: 126.81347, name: '부천동주민센터쉼터' },
           withRest: {
@@ -466,7 +466,7 @@ const handleRecommend = async (req, res) => {
           features: ['부천동 주민센터 쉼터', '차량 통행 적은 안심길'],
         },
         {
-          title: '가톨릭대 정문 앞 평탄 산책 (11분)',
+          title: '가톨릭대 정문 앞 평탄 산책',
           primaryRestId: COURSE_10_3_WITH_REST_META.restId,
           trailTarget: { lat: 37.48759, lng: 126.80846, name: '가톨릭대 정문' },
           withRest: {
@@ -488,7 +488,7 @@ const handleRecommend = async (req, res) => {
     } else if (minutes <= 35) {
       trailCandidates = [
         {
-          title: '역곡천 수변 순환 코스 (25분)',
+          title: '역곡천 수변 순환 코스',
           primaryRestId: COURSE_25_1_WITH_REST_META.restId,
           trailTarget: { lat: 37.47674, lng: 126.81873, name: '역곡천 수변데크 쉼터' },
           withRest: {
@@ -507,7 +507,7 @@ const handleRecommend = async (req, res) => {
           features: ['역곡천 수변 데크', '징검다리 쉼터', '무장애 슬로프 진입로'],
         },
         {
-          title: '가톨릭대 숲길 & 시장 둘레길 (24분)',
+          title: '가톨릭대 숲길 & 시장 둘레길',
           primaryRestId: COURSE_25_2_WITH_REST_META.restId,
           trailTarget: { lat: 37.48680, lng: 126.80000, name: '가톨릭대 성심교정 숲길' },
           withRest: {
@@ -526,7 +526,7 @@ const handleRecommend = async (req, res) => {
           features: ['상상시장 아케이드', '가톨릭대 성심교정 숲길', '캠퍼스 잔디마당'],
         },
         {
-          title: '푸른수목원 & 항동철길 힐링 코스 (28분)',
+          title: '푸른수목원 & 항동철길 힐링 코스',
           primaryRestId: COURSE_25_3_WITH_REST_META.restId,
           trailTarget: { lat: 37.48200, lng: 126.82130, name: '항동철길 & 푸른수목원 입구' },
           withRest: {
@@ -548,7 +548,7 @@ const handleRecommend = async (req, res) => {
     } else {
       trailCandidates = [
         {
-          title: '푸른수목원 전체 순환 수변길 (55분)',
+          title: '푸른수목원 전체 순환 수변길',
           primaryRestId: COURSE_60_1_WITH_REST_META.restId,
           trailTarget: { lat: 37.48420, lng: 126.82650, name: '푸른수목원 습지생태원' },
           withRest: {
@@ -567,7 +567,7 @@ const handleRecommend = async (req, res) => {
           features: ['수목원 전체 순환 데크', '습지 생태공원', '무장애 휠체어 전용길'],
         },
         {
-          title: '원미산 숲길 둘레길 (58분)',
+          title: '원미산 숲길 둘레길',
           primaryRestId: COURSE_60_2_WITH_REST_META.restId,
           trailTarget: { lat: 37.49120, lng: 126.80250, name: '원미산 진달래동산 둘레길' },
           withRest: {
@@ -586,7 +586,7 @@ const handleRecommend = async (req, res) => {
           features: ['피톤치드 숲길', '전망 정자 쉼터', '배리어프리 진입로'],
         },
         {
-          title: '역곡천 ➔ 옥길 합류 생태 둘레길 (52분)',
+          title: '역곡천 ➔ 옥길 합류 생태 둘레길',
           primaryRestId: COURSE_60_3_WITH_REST_META.restId,
           trailTarget: { lat: 37.47250, lng: 126.82400, name: '옥길 생태하천 합류부' },
           withRest: {
