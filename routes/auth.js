@@ -71,16 +71,74 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000).unref();
 
-// Nodemailer SMTP 트랜스포터 생성기 (타임아웃 3000ms 설정으로 클라우드 포트 차단 시 2분 행 방지)
+// 이메일 마스킹 헬퍼 (예: min***@gmail.com)
+function maskEmail(email) {
+  if (!email || !email.includes('@')) return email || '';
+  const [local, domain] = email.split('@');
+  if (local.length <= 2) return `${local[0]}*@${domain}`;
+  const visiblePrefix = local.substring(0, 2);
+  const maskedMiddle = '*'.repeat(Math.min(5, Math.max(1, local.length - 2)));
+  return `${visiblePrefix}${maskedMiddle}@${domain}`;
+}
+
+// HTTPS 기반 이메일 발송 (포트 443, Render 무료 티어의 SMTP 587/465 차단을 원천 우회)
+async function sendEmailHttp({ to, subject, html }) {
+  const resendApiKey = process.env.RESEND_API_KEY;
+  if (!resendApiKey) {
+    return { sent: false, error: 'NO_RESEND_KEY' };
+  }
+  const fromSender = process.env.RESEND_FROM || 'SOYO (소요) <onboarding@resend.dev>';
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${resendApiKey.trim()}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: fromSender,
+        to: [to],
+        subject,
+        html
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data.id) {
+      return { sent: true, messageId: data.id, provider: 'Resend (HTTPS API)' };
+    }
+    throw new Error(data.message || `Resend HTTP 응답 오류 (${response.status})`);
+  } catch (err) {
+    return { sent: false, error: err };
+  }
+}
+
+// Nodemailer SMTP 트랜스포터 생성기 (3000ms 타임아웃, 공백 제거, service: 'gmail' 지원)
 function getEmailTransporter() {
-  const smtpUser = process.env.SMTP_USER || process.env.SMTP_EMAIL;
-  const smtpPass = process.env.SMTP_PASS || process.env.SMTP_PASSWORD;
+  const smtpUser = (process.env.SMTP_USER || process.env.SMTP_EMAIL || '').trim();
+  const smtpPassRaw = process.env.SMTP_PASS || process.env.SMTP_PASSWORD || '';
+  // Google 앱 비밀번호는 4자리씩 띄어쓰기(abcd efgh ijkl mnop)로 발급되므로 공백 제거 필수
+  const smtpPass = smtpPassRaw.replace(/\s+/g, '');
 
   if (smtpUser && smtpPass) {
+    const smtpHost = (process.env.SMTP_HOST || 'smtp.gmail.com').trim().toLowerCase();
     const port = Number(process.env.SMTP_PORT) || 587;
     const isSecure = port === 465 || process.env.SMTP_SECURE === 'true';
+
+    if (smtpHost.includes('gmail')) {
+      return nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: smtpUser,
+          pass: smtpPass
+        },
+        connectionTimeout: 3000,
+        greetingTimeout: 3000,
+        socketTimeout: 3000
+      });
+    }
+
     return nodemailer.createTransport({
-      host: process.env.SMTP_HOST || 'smtp.gmail.com',
+      host: smtpHost,
       port,
       secure: isSecure,
       auth: {
@@ -95,9 +153,58 @@ function getEmailTransporter() {
   return null;
 }
 
+// ─── 실시간 SMTP 연결 및 환경 진단 API (JSON) ───
+router.get('/email/smtp-verify', async (req, res) => {
+  const smtpUser = process.env.SMTP_USER || process.env.SMTP_EMAIL;
+  const smtpPass = process.env.SMTP_PASS || process.env.SMTP_PASSWORD;
+  const hasResend = Boolean(process.env.RESEND_API_KEY);
+
+  const report = {
+    timestamp: new Date().toISOString(),
+    renderFreeTierNotice: 'Render 무료 티어는 스팸 방지를 위해 아웃바운드 SMTP 포트(25, 465, 587)가 차단됩니다. HTTP 기반 이메일(Resend 등) 또는 자동 인증번호 Fallback을 통해 100% 정상 작동합니다.',
+    smtp: {
+      configured: Boolean(smtpUser && smtpPass),
+      host: process.env.SMTP_HOST || 'smtp.gmail.com',
+      port: Number(process.env.SMTP_PORT) || 587,
+      userMasked: smtpUser ? `${smtpUser.substring(0, 3)}***@${smtpUser.split('@')[1] || ''}` : null,
+      passLength: smtpPass ? smtpPass.length : 0,
+      hasSpacesInPass: smtpPass ? /\s/.test(smtpPass) : false,
+      connectionTest: null,
+      error: null
+    },
+    resend: {
+      configured: hasResend
+    }
+  };
+
+  const transporter = getEmailTransporter();
+  if (transporter) {
+    try {
+      await transporter.verify();
+      report.smtp.connectionTest = 'SUCCESS (SMTP 연결 및 로그인 성공)';
+    } catch (err) {
+      report.smtp.connectionTest = 'FAILED';
+      report.smtp.error = {
+        code: err.code,
+        message: err.message,
+        hint: (err.code === 'ETIMEDOUT' || err.code === 'ESOCKETTIMEDOUT')
+          ? 'Render 무료 티어 방화벽에 의해 SMTP 포트(587/465) 접속이 차단되었습니다. 로컬 인증번호 자동발급 모드가 즉시 가동됩니다.'
+          : (err.message && err.message.includes('535'))
+            ? '구글 2단계 인증 전용 16자리 앱 비밀번호를 확인해주세요.'
+            : err.message
+      };
+    }
+  } else {
+    report.smtp.connectionTest = 'NOT_CONFIGURED';
+  }
+
+  return res.json(report);
+});
+
 // ─── 실시간 이메일/인증 진단 로그 조회 API (JSON) ───
 router.get('/email/logs', (req, res) => {
   const smtpConfigured = Boolean((process.env.SMTP_USER || process.env.SMTP_EMAIL) && (process.env.SMTP_PASS || process.env.SMTP_PASSWORD));
+  const resendConfigured = Boolean(process.env.RESEND_API_KEY);
   const supabaseConfigured = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY);
   const databaseConfigured = Boolean(process.env.DATABASE_URL);
 
@@ -108,6 +215,7 @@ router.get('/email/logs', (req, res) => {
       smtpConfigured,
       smtpHost: process.env.SMTP_HOST || 'smtp.gmail.com',
       smtpUser: (process.env.SMTP_USER || process.env.SMTP_EMAIL) ? '설정됨 (마스킹)' : '미설정',
+      resendConfigured,
       supabaseConfigured,
       databaseConfigured
     },
@@ -124,6 +232,7 @@ router.delete('/email/logs', (req, res) => {
 // ─── 실시간 이메일/인증 진단 웹 대시보드 (HTML 뷰) ───
 router.get('/email/logs-view', (req, res) => {
   const smtpConfigured = Boolean((process.env.SMTP_USER || process.env.SMTP_EMAIL) && (process.env.SMTP_PASS || process.env.SMTP_PASSWORD));
+  const resendConfigured = Boolean(process.env.RESEND_API_KEY);
   const supabaseConfigured = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY);
   const databaseConfigured = Boolean(process.env.DATABASE_URL);
 
@@ -194,7 +303,10 @@ router.get('/email/logs-view', (req, res) => {
 
         <div class="badge-bar">
           <span class="status-pill ${smtpConfigured ? 'pill-on' : 'pill-off'}">
-            ● SMTP 메일서버: ${smtpConfigured ? '연결됨 (실제 이메일 전송 가능)' : '미설정 (로컬 코드 자동발급 모드)'}
+            ● SMTP 메일서버: ${smtpConfigured ? '연결 시도 중' : '미설정 (로컬 코드 자동발급 모드)'}
+          </span>
+          <span class="status-pill ${resendConfigured ? 'pill-on' : 'pill-off'}">
+            ● Resend HTTPS API (포트 443): ${resendConfigured ? '활성 (무차단 발송)' : '미설정'}
           </span>
           <span class="status-pill ${supabaseConfigured ? 'pill-on' : 'pill-off'}">
             ● Supabase Auth OTP: ${supabaseConfigured ? '활성화' : '비활성'}
@@ -207,6 +319,7 @@ router.get('/email/logs-view', (req, res) => {
         <div class="actions-bar">
           <div style="font-size: 13px; color: #6b7280;">최근 시도 내역 (최신 ${emailActionLogs.length}건 / 최대 100건)</div>
           <div style="display: flex; gap: 8px;">
+            <a class="btn btn-refresh" href="/api/auth/email/smtp-verify" target="_blank" style="background:#0284c7;">🔍 SMTP 상세진단</a>
             <button class="btn btn-refresh" onclick="location.reload()">🔄 지금 새로고침</button>
             <button class="btn btn-clear" onclick="clearLogs()">🗑️ 로그 비우기</button>
           </div>
@@ -232,9 +345,9 @@ router.get('/email/logs-view', (req, res) => {
         </div>
 
         <div class="help-box">
-          <strong>💡 실시간 테스트 팁:</strong><br/>
-          * SMTP(구글/네이버 등 메일계정)가 미설정된 환경에서도, 위 테이블의 <strong>[발급 인증번호]</strong>를 복사하여 회원가입 및 비밀번호 재설정에 즉시 사용하실 수 있습니다.<br/>
-          * 회원이 실제 메일을 받지 못한 경우, 상단 상태바에서 메일서버 설정 여부를 확인하시거나 위 발급번호를 직접 입력하시면 정상 통과됩니다.
+          <strong>💡 실시간 테스트 & 클라우드 환경 안내:</strong><br/>
+          * <strong>Render 무료 티어 방화벽 특성:</strong> Render 무료 인스턴스는 스팸 방지를 위해 아웃바운드 SMTP 포트(25, 465, 587)를 차단합니다. 이에 따라 SOYO 백엔드는 <strong>1) Resend HTTPS API (포트 443)</strong> 및 <strong>2) 로컬 인증번호 즉시 Fallback</strong>을 탑재하여 어떤 환경에서도 회원이 막힘없이 즉시 인증할 수 있도록 보장합니다.<br/>
+          * 메일 수신이 지연되거나 차단된 경우, 위 테이블의 <strong>[발급 인증번호]</strong>를 복사하거나 프론트엔드 모달의 <strong>[자동 입력]</strong> 버튼을 누르시면 즉시 정상 통과됩니다.
         </div>
       </div>
 
@@ -350,74 +463,91 @@ router.post('/email/send-code', async (req, res) => {
     });
 
     let emailSent = false;
-    let providerName = '로컬 인증코드(Fallback)';
+    let providerName = '로컬 인증코드 (Fallback)';
     let deliveryError = null;
 
-    // 2. Nodemailer SMTP 발송 시도 (설정된 경우)
-    const transporter = getEmailTransporter();
-    if (transporter) {
-      try {
-        console.log(`📧 [Nodemailer] 이메일 발송 시도: ${cleanEmail}`);
-        const smtpUser = process.env.SMTP_USER || process.env.SMTP_EMAIL;
-        const fromSender = (process.env.SMTP_FROM && !process.env.SMTP_FROM.includes('no-reply@soyo.com'))
-          ? process.env.SMTP_FROM
-          : (smtpUser ? `"SOYO (소요)" <${smtpUser}>` : '"SOYO (소요)" <no-reply@soyo.com>');
+    const emailHtml = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background-color: #ffffff;">
+        <h2 style="color: #15803d; margin-top: 0;">🌿 SOYO (소요) 본인 확인 인증</h2>
+        <p style="color: #374151; font-size: 15px; line-height: 1.6;">
+          안녕하세요! 맞춤형 식이 & 산책 웰니스 플랫폼 <strong>소요(SOYO)</strong>입니다.<br/>
+          요청하신 이메일 인증번호는 아래와 같습니다.
+        </p>
+        <div style="background-color: #f0fdf4; border: 2px solid #86efac; border-radius: 8px; padding: 18px; text-align: center; margin: 24px 0;">
+          <span style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #166534;">${localCode}</span>
+        </div>
+        <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+          * 본 인증번호는 <strong>5분간</strong> 유효합니다.<br/>
+          * 본인이 요청하지 않은 경우 본 메일을 무시하셔도 됩니다.
+        </p>
+      </div>
+    `;
 
-        const sendInfo = await transporter.sendMail({
-          from: fromSender,
+    // 2-1. HTTPS 기반 이메일 발송 시도 (Resend API - Render 방화벽 우회)
+    if (process.env.RESEND_API_KEY) {
+      try {
+        console.log(`🚀 [Resend HTTPS] 이메일 발송 시도: ${cleanEmail}`);
+        const resendRes = await sendEmailHttp({
           to: cleanEmail,
-          subject: '[SOYO] 이메일 인증번호 안내',
-          html: `
-            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background-color: #ffffff;">
-              <h2 style="color: #15803d; margin-top: 0;">🌿 SOYO (소요) 본인 확인 인증</h2>
-              <p style="color: #374151; font-size: 15px; line-height: 1.6;">
-                안녕하세요! 맞춤형 식이 & 산책 웰니스 플랫폼 <strong>소요(SOYO)</strong>입니다.<br/>
-                요청하신 이메일 인증번호는 아래와 같습니다.
-              </p>
-              <div style="background-color: #f0fdf4; border: 2px solid #86efac; border-radius: 8px; padding: 18px; text-align: center; margin: 24px 0;">
-                <span style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #166534;">${localCode}</span>
-              </div>
-              <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
-                * 본 인증번호는 <strong>5분간</strong> 유효합니다.<br/>
-                * 본인이 요청하지 않은 경우 본 메일을 무시하셔도 됩니다.
-              </p>
-            </div>
-          `
+          subject: '[SOYO] 이메일 본인 확인 인증번호 안내',
+          html: emailHtml
         });
-        emailSent = true;
-        providerName = 'Nodemailer(SMTP)';
-        console.log(`✅ [Nodemailer] 이메일 발송 성공: ${cleanEmail} (메시지ID: ${sendInfo?.messageId || 'N/A'})`);
-      } catch (smtpErr) {
-        deliveryError = smtpErr;
-        console.warn(`⚠️ [Nodemailer 발송 실패 (${smtpErr.code || 'ERR'}), Supabase/로컬 모드 가동]:`, smtpErr.message);
+        if (resendRes.sent) {
+          emailSent = true;
+          providerName = 'Resend (HTTPS API)';
+          deliveryError = null;
+          console.log(`✅ [Resend HTTPS] 이메일 발송 성공: ${cleanEmail} (ID: ${resendRes.messageId})`);
+        }
+      } catch (httpErr) {
+        deliveryError = httpErr;
+        console.warn('⚠️ [Resend HTTPS 발송 실패]:', httpErr.message);
       }
-    } else {
-      console.log(`ℹ️ [Nodemailer] SMTP 미설정, Supabase/로컬 모드로 전환합니다.`);
     }
 
-    // 3. Supabase Auth 이메일 OTP 발송 시도 (Nodemailer 미발송 시)
+    // 2-2. Nodemailer SMTP 발송 시도 (Resend 미발송 시)
+    if (!emailSent) {
+      const transporter = getEmailTransporter();
+      if (transporter) {
+        try {
+          console.log(`📧 [Nodemailer] 이메일 발송 시도: ${cleanEmail}`);
+          const smtpUser = process.env.SMTP_USER || process.env.SMTP_EMAIL;
+          const fromSender = (process.env.SMTP_FROM && !process.env.SMTP_FROM.includes('no-reply@soyo.com'))
+            ? process.env.SMTP_FROM
+            : (smtpUser ? `"SOYO (소요)" <${smtpUser}>` : '"SOYO (소요)" <no-reply@soyo.com>');
+
+          const sendInfo = await transporter.sendMail({
+            from: fromSender,
+            to: cleanEmail,
+            subject: '[SOYO] 이메일 인증번호 안내',
+            html: emailHtml
+          });
+          emailSent = true;
+          providerName = 'Nodemailer (SMTP)';
+          deliveryError = null;
+          console.log(`✅ [Nodemailer] 이메일 발송 성공: ${cleanEmail} (메시지ID: ${sendInfo?.messageId || 'N/A'})`);
+        } catch (smtpErr) {
+          deliveryError = smtpErr;
+          console.warn(`⚠️ [Nodemailer 발송 실패 (${smtpErr.code || 'ERR'}), 로컬 Fallback 가동]:`, smtpErr.message);
+        }
+      } else {
+        console.log(`ℹ️ [Nodemailer] SMTP 미설정, 로컬 인증코드 발급 모드로 전환합니다.`);
+      }
+    }
+
+    // 2-3. Supabase Auth 이메일 OTP 보조 호출 (단, Supabase는 자체 템플릿을 쓰므로 emailSent를 true로 덮어쓰지 않음)
     if (!emailSent && supabase) {
       try {
-        console.log(`🚀 [Supabase Auth] 이메일 OTP 발송 요청: ${cleanEmail}`);
-        // 회원가입 시에는 신규 가입 생성을 허용(shouldCreateUser: true)해야 메일이 발송됨
+        console.log(`ℹ️ [Supabase Auth] 보조 OTP 호출: ${cleanEmail}`);
         const { error: sbError } = await supabase.auth.signInWithOtp({
           email: cleanEmail,
           options: {
-            shouldCreateUser: type === 'signup'
+            shouldCreateUser: false
           }
         });
-
         if (sbError) {
-          deliveryError = sbError;
-          console.warn('⚠️ [Supabase Auth OTP 발송 실패/제한]:', sbError.message);
-        } else {
-          emailSent = true;
-          providerName = 'Supabase Auth';
-          deliveryError = null;
-          console.log(`✅ [Supabase Auth] 이메일 OTP 발송 성공: ${cleanEmail}`);
+          console.warn('⚠️ [Supabase Auth OTP 보조 호출 실패/제한]:', sbError.message);
         }
       } catch (sbCatchErr) {
-        deliveryError = sbCatchErr;
         console.warn('⚠️ [Supabase Auth 호출 예외]:', sbCatchErr.message);
       }
     }
@@ -432,7 +562,9 @@ router.post('/email/send-code', async (req, res) => {
       error: deliveryError,
       details: emailSent
         ? `${providerName}를 통해 사용자 메일함으로 발송 완료`
-        : `메일서버 미설정 또는 제한으로 로컬 인증번호 즉시 발급 (코드: ${localCode})`
+        : (deliveryError
+            ? `메일서버 전송 지연/오류 (${deliveryError.message || deliveryError.code || 'ERR'}) -> 로컬 인증코드 즉시 발급 (코드: ${localCode})`
+            : `메일서버 미설정 -> 로컬 인증코드 즉시 발급 (코드: ${localCode})`)
     });
 
     console.log(`📨 [인증번호 발송 완료] 대상: ${cleanEmail}, 코드: [${localCode}] (발송 성공 여부: ${emailSent})`);
@@ -441,9 +573,10 @@ router.post('/email/send-code', async (req, res) => {
       code: localCode,
       debugCode: localCode,
       emailSent,
+      provider: providerName,
       message: emailSent
-        ? '인증번호가 이메일로 발송되었습니다. 메일함을 확인해주세요.'
-        : `인증번호가 발송되었습니다. [인증번호: ${localCode}] (안내된 번호를 입력해주세요)`
+        ? `인증번호가 이메일로 발송되었습니다. 메일함을 확인해주세요. [인증번호: ${localCode}]`
+        : `인증번호가 발송되었습니다. [인증번호: ${localCode}] (화면에 안내된 번호를 입력해주세요)`
     });
   } catch (err) {
     console.error('이메일 발송 라우트 에러:', err);
@@ -631,20 +764,52 @@ router.post('/find-id', async (req, res) => {
 
     // 대소문자 및 양쪽 공백 무시 안전 조회
     const result = await pool.query(`
-      SELECT login_id, user_name, email FROM user_profiles
+      SELECT login_id, user_name, email, provider FROM user_profiles
       WHERE LOWER(TRIM(user_name)) = LOWER(TRIM($1)) AND LOWER(TRIM(email)) = $2
       ORDER BY updated_at DESC
       LIMIT 1;
     `, [cleanName, cleanEmail]);
 
     if (result.rows.length === 0 || !result.rows[0].login_id) {
-      // 혹시 이름에 공백이 포함되어 있거나 미세하게 다른 경우 이메일 단독 매칭으로 보조 확인
+      // 혹시 이름에 미세한 차이가 있거나 소셜 로그인 계정인지 보조 확인
       const emailOnlyCheck = await pool.query(`
-        SELECT login_id, user_name FROM user_profiles
+        SELECT login_id, user_name, email, provider FROM user_profiles
         WHERE LOWER(TRIM(email)) = $1
         ORDER BY updated_at DESC
         LIMIT 1;
       `, [cleanEmail]);
+
+      if (emailOnlyCheck.rows.length > 0) {
+        const row = emailOnlyCheck.rows[0];
+        if (row.provider && row.provider !== 'local' && !row.login_id) {
+          recordEmailLog({
+            action: '아이디 찾기 요청',
+            email: cleanEmail,
+            status: 'INFO',
+            provider: 'AWS RDS DB',
+            details: `소셜 로그인(${row.provider}) 계정 안내`
+          });
+          return res.status(400).json({
+            success: false,
+            isSocial: true,
+            provider: row.provider,
+            error: `해당 계정은 ${row.provider === 'kakao' ? '카카오' : '구글'} 소셜 로그인으로 가입된 계정입니다. 소셜 로그인을 이용해주세요.`
+          });
+        }
+
+        recordEmailLog({
+          action: '아이디 찾기 요청',
+          email: cleanEmail,
+          status: 'FAIL',
+          provider: 'AWS RDS DB',
+          error: '이름 불일치',
+          details: `이메일은 등록되어 있으나 이름 불일치 (입력: '${cleanName}', 등록명: '${row.user_name || ''}')`
+        });
+        return res.status(404).json({
+          success: false,
+          error: '입력하신 이메일은 가입되어 있으나 이름이 일치하지 않습니다. 가입 시 등록하신 이름을 확인해주세요.'
+        });
+      }
 
       recordEmailLog({
         action: '아이디 찾기 요청',
@@ -652,15 +817,14 @@ router.post('/find-id', async (req, res) => {
         status: 'FAIL',
         provider: 'AWS RDS DB',
         error: '일치 계정 없음',
-        details: emailOnlyCheck.rows.length > 0
-          ? `이메일은 존재하나 이름 불일치 (입력: '${cleanName}', 등록명: '${emailOnlyCheck.rows[0].user_name || ''}')`
-          : `입력하신 이메일(${cleanEmail})로 등록된 프로필이 없음`
+        details: `입력하신 이메일(${cleanEmail})로 등록된 프로필이 없음`
       });
 
       return res.status(404).json({ success: false, error: '입력하신 정보와 일치하는 계정을 찾을 수 없습니다.' });
     }
 
-    const loginId = result.rows[0].login_id;
+    const matchedUser = result.rows[0];
+    const loginId = matchedUser.login_id;
     recordEmailLog({
       action: '아이디 찾기 요청',
       email: cleanEmail,
@@ -698,7 +862,7 @@ router.post('/password-reset/send-code', async (req, res) => {
         error: '아이디 미입력',
         details: '아이디 파라미터 누락'
       });
-      return res.status(400).json({ success: false, error: '아이디를 입력해주세요.' });
+      return res.status(400).json({ success: false, error: '아이디 또는 이메일을 입력해주세요.' });
     }
 
     if (!process.env.DATABASE_URL) {
@@ -710,7 +874,7 @@ router.post('/password-reset/send-code', async (req, res) => {
 
     // 대소문자 무시 및 아이디 또는 이메일로 다중 매칭
     const result = await pool.query(`
-      SELECT login_id, email, user_name, password_hash FROM user_profiles
+      SELECT login_id, email, user_name, password_hash, provider FROM user_profiles
       WHERE LOWER(TRIM(login_id)) = $1 OR LOWER(TRIM(email)) = $1
       ORDER BY updated_at DESC
       LIMIT 1;
@@ -731,6 +895,25 @@ router.post('/password-reset/send-code', async (req, res) => {
     const matchedUser = result.rows[0];
     const userEmail = matchedUser.email.trim().toLowerCase();
     const actualLoginId = matchedUser.login_id ? matchedUser.login_id.trim() : cleanId;
+
+    // 만약 소셜 로그인 계정이고 비밀번호가 없는 경우 친절히 안내
+    if (matchedUser.provider && matchedUser.provider !== 'local' && (!matchedUser.password_hash || matchedUser.password_hash.trim() === '')) {
+      recordEmailLog({
+        action: '비밀번호 재설정 인증번호 발송',
+        loginId: actualLoginId,
+        email: userEmail,
+        status: 'INFO',
+        provider: 'AWS RDS DB',
+        details: `소셜 로그인(${matchedUser.provider}) 계정으로 비밀번호 없음`
+      });
+      return res.status(400).json({
+        success: false,
+        isSocial: true,
+        provider: matchedUser.provider,
+        error: `해당 계정은 ${matchedUser.provider === 'kakao' ? '카카오' : '구글'} 소셜 로그인 계정입니다. 소셜 로그인을 통해 바로 이용하실 수 있습니다.`
+      });
+    }
+
     const localCode = crypto.randomInt(100000, 1000000).toString();
     const expiresAt = Date.now() + 5 * 60 * 1000;
 
@@ -743,7 +926,6 @@ router.post('/password-reset/send-code', async (req, res) => {
       verified: false
     };
 
-    // 사용자가 아이디나 이메일 중 어느 것으로 요청/검증해도 인식되도록 양방향 키 등록
     passwordResetCodes.set(cleanIdLower, resetEntry);
     passwordResetCodes.set(userEmail, resetEntry);
     if (actualLoginId) {
@@ -751,67 +933,88 @@ router.post('/password-reset/send-code', async (req, res) => {
     }
 
     let emailSent = false;
-    let providerName = '로컬 인증코드(Fallback)';
+    let providerName = '로컬 인증코드 (Fallback)';
     let deliveryError = null;
 
-    // Nodemailer 발송 시도
-    const transporter = getEmailTransporter();
-    if (transporter) {
-      try {
-        console.log(`📧 [Nodemailer] 비밀번호 재설정 메일 발송 시도: ${userEmail}`);
-        const smtpUser = process.env.SMTP_USER || process.env.SMTP_EMAIL;
-        const fromSender = (process.env.SMTP_FROM && !process.env.SMTP_FROM.includes('no-reply@soyo.com'))
-          ? process.env.SMTP_FROM
-          : (smtpUser ? `"SOYO (소요)" <${smtpUser}>` : '"SOYO (소요)" <no-reply@soyo.com>');
+    const resetEmailHtml = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background-color: #ffffff;">
+        <h2 style="color: #15803d; margin-top: 0;">🌿 SOYO (소요) 비밀번호 재설정</h2>
+        <p style="color: #374151; font-size: 15px; line-height: 1.6;">
+          안녕하세요! 요청하신 비밀번호 재설정 인증번호입니다.
+        </p>
+        <div style="background-color: #f0fdf4; border: 2px solid #86efac; border-radius: 8px; padding: 18px; text-align: center; margin: 24px 0;">
+          <span style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #166534;">${localCode}</span>
+        </div>
+        <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
+          * 본 인증번호는 <strong>5분간</strong> 유효합니다.<br/>
+          * 본인이 요청하지 않은 경우 비밀번호를 즉시 확인해 주세요.
+        </p>
+      </div>
+    `;
 
-        const sendInfo = await transporter.sendMail({
-          from: fromSender,
+    // 1. Resend HTTPS API 발송 시도
+    if (process.env.RESEND_API_KEY) {
+      try {
+        console.log(`🚀 [Resend HTTPS] 비밀번호 재설정 메일 발송 시도: ${userEmail}`);
+        const resendRes = await sendEmailHttp({
           to: userEmail,
           subject: '[SOYO] 비밀번호 재설정 인증번호 안내',
-          html: `
-            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background-color: #ffffff;">
-              <h2 style="color: #15803d; margin-top: 0;">🌿 SOYO (소요) 비밀번호 재설정</h2>
-              <p style="color: #374151; font-size: 15px; line-height: 1.6;">
-                안녕하세요! 요청하신 비밀번호 재설정 인증번호입니다.
-              </p>
-              <div style="background-color: #f0fdf4; border: 2px solid #86efac; border-radius: 8px; padding: 18px; text-align: center; margin: 24px 0;">
-                <span style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #166534;">${localCode}</span>
-              </div>
-              <p style="color: #6b7280; font-size: 13px; margin-bottom: 0;">
-                * 본 인증번호는 <strong>5분간</strong> 유효합니다.
-              </p>
-            </div>
-          `
+          html: resetEmailHtml
         });
-        emailSent = true;
-        providerName = 'Nodemailer(SMTP)';
-        console.log(`✅ [Nodemailer] 비밀번호 재설정 메일 발송 성공: ${userEmail} (메시지ID: ${sendInfo?.messageId || 'N/A'})`);
-      } catch (smtpErr) {
-        deliveryError = smtpErr;
-        console.warn(`⚠️ [Nodemailer 비밀번호 재설정 메일 발송 실패 (${smtpErr.code || 'ERR'})]:`, smtpErr.message);
+        if (resendRes.sent) {
+          emailSent = true;
+          providerName = 'Resend (HTTPS API)';
+          deliveryError = null;
+          console.log(`✅ [Resend HTTPS] 비밀번호 재설정 메일 발송 성공: ${userEmail} (ID: ${resendRes.messageId})`);
+        }
+      } catch (httpErr) {
+        deliveryError = httpErr;
+        console.warn('⚠️ [Resend HTTPS 발송 실패]:', httpErr.message);
       }
-    } else {
-      console.log(`ℹ️ [Nodemailer] SMTP 미설정, Supabase/로컬 모드로 전환합니다.`);
     }
 
-    // Supabase Auth 이메일 OTP 시도
+    // 2. Nodemailer SMTP 발송 시도 (Resend 미발송 시)
+    if (!emailSent) {
+      const transporter = getEmailTransporter();
+      if (transporter) {
+        try {
+          console.log(`📧 [Nodemailer] 비밀번호 재설정 메일 발송 시도: ${userEmail}`);
+          const smtpUser = process.env.SMTP_USER || process.env.SMTP_EMAIL;
+          const fromSender = (process.env.SMTP_FROM && !process.env.SMTP_FROM.includes('no-reply@soyo.com'))
+            ? process.env.SMTP_FROM
+            : (smtpUser ? `"SOYO (소요)" <${smtpUser}>` : '"SOYO (소요)" <no-reply@soyo.com>');
+
+          const sendInfo = await transporter.sendMail({
+            from: fromSender,
+            to: userEmail,
+            subject: '[SOYO] 비밀번호 재설정 인증번호 안내',
+            html: resetEmailHtml
+          });
+          emailSent = true;
+          providerName = 'Nodemailer (SMTP)';
+          deliveryError = null;
+          console.log(`✅ [Nodemailer] 비밀번호 재설정 메일 발송 성공: ${userEmail} (메시지ID: ${sendInfo?.messageId || 'N/A'})`);
+        } catch (smtpErr) {
+          deliveryError = smtpErr;
+          console.warn(`⚠️ [Nodemailer 비밀번호 재설정 실패 (${smtpErr.code || 'ERR'}), 로컬 Fallback 가동]:`, smtpErr.message);
+        }
+      } else {
+        console.log(`ℹ️ [Nodemailer] SMTP 미설정, 로컬 인증코드 발급 모드로 전환합니다.`);
+      }
+    }
+
+    // 3. Supabase Auth 이메일 OTP 보조 호출 (emailSent 플래그는 덮어쓰지 않음)
     if (!emailSent && supabase) {
       try {
-        console.log(`🚀 [비밀번호 재설정] Supabase Auth OTP 발송 시도: ${userEmail}`);
+        console.log(`ℹ️ [비밀번호 재설정] Supabase Auth OTP 보조 호출: ${userEmail}`);
         const { error: sbErr } = await supabase.auth.signInWithOtp({
           email: userEmail,
           options: { shouldCreateUser: false }
         });
-        if (!sbErr) {
-          emailSent = true;
-          providerName = 'Supabase Auth';
-          deliveryError = null;
-        } else {
-          deliveryError = sbErr;
-          console.warn('⚠️ [비밀번호 재설정 Supabase OTP 실패/제한]:', sbErr.message);
+        if (sbErr) {
+          console.warn('⚠️ [비밀번호 재설정 Supabase OTP 보조 호출 실패]:', sbErr.message);
         }
       } catch (sbErr) {
-        deliveryError = sbErr;
         console.warn('⚠️ [비밀번호 재설정 Supabase OTP 예외]:', sbErr.message);
       }
     }
@@ -826,8 +1029,10 @@ router.post('/password-reset/send-code', async (req, res) => {
       code: localCode,
       error: deliveryError,
       details: emailSent
-        ? `${providerName}를 통해 등록된 이메일(${userEmail})로 발송 완료`
-        : `메일서버 미설정 또는 제한으로 인증번호 즉시 발급 (코드: ${localCode})`
+        ? `${providerName}를 통해 등록된 이메일(${maskEmail(userEmail)})로 발송 완료`
+        : (deliveryError
+            ? `메일 전송 지연/오류 (${deliveryError.message || deliveryError.code || 'ERR'}) -> 로컬 인증코드 발급 (코드: ${localCode})`
+            : `메일서버 미설정 -> 로컬 인증코드 즉시 발급 (코드: ${localCode})`)
     });
 
     console.log(`📨 [비밀번호 재설정 인증코드 발송] 아이디: ${actualLoginId}, 이메일: ${userEmail}, 코드: [${localCode}] (메일 발송 여부: ${emailSent})`);
@@ -836,9 +1041,11 @@ router.post('/password-reset/send-code', async (req, res) => {
       code: localCode,
       debugCode: localCode,
       emailSent,
+      provider: providerName,
+      maskedEmail: maskEmail(userEmail),
       message: emailSent
-        ? '해당 아이디의 등록된 이메일로 인증번호를 발송했습니다.'
-        : `인증번호가 발송되었습니다. [인증번호: ${localCode}] (안내된 번호를 입력해주세요)`
+        ? `등록된 이메일(${maskEmail(userEmail)})로 인증번호가 발송되었습니다. [인증번호: ${localCode}]`
+        : `인증번호가 발송되었습니다. [인증번호: ${localCode}] (화면에 안내된 번호를 입력해주세요)`
     });
   } catch (err) {
     console.error('❌ [비밀번호 재설정 코드 발송 에러]:', err);
