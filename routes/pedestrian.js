@@ -52,8 +52,8 @@ async function callPedestrianRoute(start, end, options = {}) {
         startY: Number(start.lat),
         endX: Number(end.lng),
         endY: Number(end.lat),
-        startName: encodeURIComponent(start.name || '출발지'),
-        endName: encodeURIComponent(end.name || '도착지'),
+        startName: start.name || '출발지',
+        endName: end.name || '도착지',
         searchOption: searchOption,
         reqCoordType: 'WGS84GEO',
         resCoordType: 'WGS84GEO'
@@ -175,14 +175,11 @@ async function callPedestrianRoute(start, end, options = {}) {
     console.warn('⚠️ [OSRM 실시간 도로망 조회 실패, 사전 산출 고밀도 도로망 사용]:', osrmErr.message);
   }
 
-  // 3. Fallback: 기본 2점 연결
+  // 3. Fallback: 도로망 연산 불가 시 빈 배열 반환 (건물 관통 2점 일자선 절대 생성 금지)
   return {
     success: false,
     source: 'fallback',
-    geoPath: [
-      { lat: start.lat, lng: start.lng },
-      { lat: end.lat, lng: end.lng }
-    ],
+    geoPath: [],
     turnByTurn: [`${start.name || '출발지'}에서 ${end.name || '목적지'} 방면으로 도보 이동`],
     distanceMeters: 500,
     durationSeconds: 400
@@ -297,7 +294,24 @@ const handleRecommend = async (req, res) => {
       ? (req.query.lat && req.query.lng ? { lat: Number(req.query.lat), lng: Number(req.query.lng) } : null)
       : req.body.currentLocation;
 
-    const startHub = userLocation?.lat && userLocation?.lng
+    // 원거리(다른 시/구, 2.5km 초과)에서 테스트 시 크로스 시티 일자선 방지: 코스 권역(역곡) 기준점 사용
+    let isNearYeokgok = false;
+    if (userLocation?.lat && userLocation?.lng) {
+      const dLat = (userLocation.lat - YEOKGOK_STATION.south.lat) * (Math.PI / 180);
+      const dLng = (userLocation.lng - YEOKGOK_STATION.south.lng) * (Math.PI / 180);
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(YEOKGOK_STATION.south.lat * (Math.PI / 180)) *
+          Math.cos(userLocation.lat * (Math.PI / 180)) *
+          Math.sin(dLng / 2) *
+          Math.sin(dLng / 2);
+      const distKm = 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      if (distKm <= 2.5) {
+        isNearYeokgok = true;
+      }
+    }
+
+    const startHub = isNearYeokgok
       ? { lat: userLocation.lat, lng: userLocation.lng, name: '현재 내 위치' }
       : { ...YEOKGOK_STATION.south, name: '역곡역' };
 
