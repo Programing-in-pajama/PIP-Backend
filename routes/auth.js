@@ -131,9 +131,9 @@ function getEmailTransporter() {
           user: smtpUser,
           pass: smtpPass
         },
-        connectionTimeout: 3000,
-        greetingTimeout: 3000,
-        socketTimeout: 3000
+        connectionTimeout: 1500,
+        greetingTimeout: 1500,
+        socketTimeout: 1500
       });
     }
 
@@ -145,9 +145,9 @@ function getEmailTransporter() {
         user: smtpUser,
         pass: smtpPass
       },
-      connectionTimeout: 3000,
-      greetingTimeout: 3000,
-      socketTimeout: 3000
+      connectionTimeout: 1500,
+      greetingTimeout: 1500,
+      socketTimeout: 1500
     });
   }
   return null;
@@ -534,20 +534,27 @@ router.post('/email/send-code', async (req, res) => {
       }
     }
 
-    // 2-3. Supabase Auth 이메일 OTP 보조 호출 (단, Supabase는 자체 템플릿을 쓰므로 emailSent를 true로 덮어쓰지 않음)
+    // 2-3. Supabase Auth 이메일 OTP 발송 (Render SMTP 포트 차단 환경에서도 실제 메일 수신 보장)
     if (!emailSent && supabase) {
       try {
-        console.log(`ℹ️ [Supabase Auth] 보조 OTP 호출: ${cleanEmail}`);
+        console.log(`🚀 [Supabase Auth] 이메일 OTP 발송 요청: ${cleanEmail}`);
         const { error: sbError } = await supabase.auth.signInWithOtp({
           email: cleanEmail,
           options: {
-            shouldCreateUser: false
+            shouldCreateUser: true
           }
         });
         if (sbError) {
-          console.warn('⚠️ [Supabase Auth OTP 보조 호출 실패/제한]:', sbError.message);
+          deliveryError = sbError;
+          console.warn('⚠️ [Supabase Auth OTP 발송 실패/제한]:', sbError.message);
+        } else {
+          emailSent = true;
+          providerName = 'Supabase Auth';
+          deliveryError = null;
+          console.log(`✅ [Supabase Auth] 실제 이메일 발송 성공: ${cleanEmail}`);
         }
       } catch (sbCatchErr) {
+        deliveryError = sbCatchErr;
         console.warn('⚠️ [Supabase Auth 호출 예외]:', sbCatchErr.message);
       }
     }
@@ -1003,18 +1010,31 @@ router.post('/password-reset/send-code', async (req, res) => {
       }
     }
 
-    // 3. Supabase Auth 이메일 OTP 보조 호출 (emailSent 플래그는 덮어쓰지 않음)
+    // 3. Supabase Auth 이메일 OTP 발송 (실제 이메일 수신 보장)
     if (!emailSent && supabase) {
       try {
-        console.log(`ℹ️ [비밀번호 재설정] Supabase Auth OTP 보조 호출: ${userEmail}`);
-        const { error: sbErr } = await supabase.auth.signInWithOtp({
+        console.log(`🚀 [비밀번호 재설정] Supabase Auth OTP 발송 시도: ${userEmail}`);
+        let sbRes = await supabase.auth.signInWithOtp({
           email: userEmail,
           options: { shouldCreateUser: false }
         });
-        if (sbErr) {
-          console.warn('⚠️ [비밀번호 재설정 Supabase OTP 보조 호출 실패]:', sbErr.message);
+        if (sbRes.error && sbRes.error.message && sbRes.error.message.includes('not allowed')) {
+          sbRes = await supabase.auth.signInWithOtp({
+            email: userEmail,
+            options: { shouldCreateUser: true }
+          });
+        }
+        if (!sbRes.error) {
+          emailSent = true;
+          providerName = 'Supabase Auth';
+          deliveryError = null;
+          console.log(`✅ [비밀번호 재설정] Supabase Auth 이메일 발송 성공: ${userEmail}`);
+        } else {
+          deliveryError = sbRes.error;
+          console.warn('⚠️ [비밀번호 재설정 Supabase OTP 발송 실패]:', sbRes.error.message);
         }
       } catch (sbErr) {
+        deliveryError = sbErr;
         console.warn('⚠️ [비밀번호 재설정 Supabase OTP 예외]:', sbErr.message);
       }
     }
