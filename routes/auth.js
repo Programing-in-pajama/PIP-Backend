@@ -71,7 +71,7 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000).unref();
 
-// Nodemailer SMTP 트랜스포터 생성기
+// Nodemailer SMTP 트랜스포터 생성기 (타임아웃 3000ms 설정으로 클라우드 포트 차단 시 2분 행 방지)
 function getEmailTransporter() {
   const smtpUser = process.env.SMTP_USER || process.env.SMTP_EMAIL;
   const smtpPass = process.env.SMTP_PASS || process.env.SMTP_PASSWORD;
@@ -86,7 +86,10 @@ function getEmailTransporter() {
       auth: {
         user: smtpUser,
         pass: smtpPass
-      }
+      },
+      connectionTimeout: 3000,
+      greetingTimeout: 3000,
+      socketTimeout: 3000
     });
   }
   return null;
@@ -355,8 +358,13 @@ router.post('/email/send-code', async (req, res) => {
     if (transporter) {
       try {
         console.log(`📧 [Nodemailer] 이메일 발송 시도: ${cleanEmail}`);
-        await transporter.sendMail({
-          from: process.env.SMTP_FROM || `"SOYO (소요)" <${process.env.SMTP_USER || process.env.SMTP_EMAIL}>`,
+        const smtpUser = process.env.SMTP_USER || process.env.SMTP_EMAIL;
+        const fromSender = (process.env.SMTP_FROM && !process.env.SMTP_FROM.includes('no-reply@soyo.com'))
+          ? process.env.SMTP_FROM
+          : (smtpUser ? `"SOYO (소요)" <${smtpUser}>` : '"SOYO (소요)" <no-reply@soyo.com>');
+
+        const sendInfo = await transporter.sendMail({
+          from: fromSender,
           to: cleanEmail,
           subject: '[SOYO] 이메일 인증번호 안내',
           html: `
@@ -378,11 +386,13 @@ router.post('/email/send-code', async (req, res) => {
         });
         emailSent = true;
         providerName = 'Nodemailer(SMTP)';
-        console.log(`✅ [Nodemailer] 이메일 발송 성공: ${cleanEmail}`);
+        console.log(`✅ [Nodemailer] 이메일 발송 성공: ${cleanEmail} (메시지ID: ${sendInfo?.messageId || 'N/A'})`);
       } catch (smtpErr) {
         deliveryError = smtpErr;
-        console.warn('⚠️ [Nodemailer 발송 실패, Supabase/로컬 모드 가동]:', smtpErr.message);
+        console.warn(`⚠️ [Nodemailer 발송 실패 (${smtpErr.code || 'ERR'}), Supabase/로컬 모드 가동]:`, smtpErr.message);
       }
+    } else {
+      console.log(`ℹ️ [Nodemailer] SMTP 미설정, Supabase/로컬 모드로 전환합니다.`);
     }
 
     // 3. Supabase Auth 이메일 OTP 발송 시도 (Nodemailer 미발송 시)
@@ -749,8 +759,13 @@ router.post('/password-reset/send-code', async (req, res) => {
     if (transporter) {
       try {
         console.log(`📧 [Nodemailer] 비밀번호 재설정 메일 발송 시도: ${userEmail}`);
-        await transporter.sendMail({
-          from: process.env.SMTP_FROM || `"SOYO (소요)" <${process.env.SMTP_USER || process.env.SMTP_EMAIL}>`,
+        const smtpUser = process.env.SMTP_USER || process.env.SMTP_EMAIL;
+        const fromSender = (process.env.SMTP_FROM && !process.env.SMTP_FROM.includes('no-reply@soyo.com'))
+          ? process.env.SMTP_FROM
+          : (smtpUser ? `"SOYO (소요)" <${smtpUser}>` : '"SOYO (소요)" <no-reply@soyo.com>');
+
+        const sendInfo = await transporter.sendMail({
+          from: fromSender,
           to: userEmail,
           subject: '[SOYO] 비밀번호 재설정 인증번호 안내',
           html: `
@@ -770,11 +785,13 @@ router.post('/password-reset/send-code', async (req, res) => {
         });
         emailSent = true;
         providerName = 'Nodemailer(SMTP)';
-        console.log(`✅ [Nodemailer] 비밀번호 재설정 메일 발송 성공: ${userEmail}`);
+        console.log(`✅ [Nodemailer] 비밀번호 재설정 메일 발송 성공: ${userEmail} (메시지ID: ${sendInfo?.messageId || 'N/A'})`);
       } catch (smtpErr) {
         deliveryError = smtpErr;
-        console.warn('⚠️ [Nodemailer 비밀번호 재설정 메일 발송 실패]:', smtpErr.message);
+        console.warn(`⚠️ [Nodemailer 비밀번호 재설정 메일 발송 실패 (${smtpErr.code || 'ERR'})]:`, smtpErr.message);
       }
+    } else {
+      console.log(`ℹ️ [Nodemailer] SMTP 미설정, Supabase/로컬 모드로 전환합니다.`);
     }
 
     // Supabase Auth 이메일 OTP 시도
