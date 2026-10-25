@@ -544,34 +544,37 @@ router.post('/profile', async (req, res) => {
       noMedication = false
     } = req.body;
 
-    const finalName = (name || userName || '').trim();
-    const finalBirth = birth || birthDate;
-
-    if (!finalName || !finalBirth) {
-      return res.status(400).json({ error: '이름과 생년월일은 필수 입력값입니다.' });
-    }
-
     const cleanLoginId = loginId ? String(loginId).trim() : null;
-    const cleanEmail = email ? String(email).trim() : null;
+    const cleanEmail = email ? String(email).trim().toLowerCase() : null;
     const cleanRawId = userId ? String(userId).trim() : null;
 
     if (!cleanRawId && !cleanLoginId && !cleanEmail) {
-      return res.status(400).json({ error: '사용자 식별자(userId 또는 loginId)가 필요합니다.' });
+      return res.status(400).json({ error: '사용자 식별자(userId 또는 loginId 또는 email)가 필요합니다.' });
     }
 
-    let validUserId = null;
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    // 1. login_id 또는 email 이 이미 존재하는 경우 기존 ID를 우선 재사용 (중복 행 방지)
-    if (cleanLoginId || cleanEmail) {
-      const existRes = await pool.query(
-        'SELECT id FROM user_profiles WHERE login_id = $1 OR email = $2 ORDER BY updated_at DESC LIMIT 1',
-        [cleanLoginId || '', cleanEmail || '']
-      );
-      if (existRes.rows.length > 0) {
-        validUserId = existRes.rows[0].id;
+    let existingUser = null;
+
+    // 1. 기존 유저 정보 조회 (id, login_id, email 복합 매칭)
+    if (process.env.DATABASE_URL) {
+      try {
+        const checkRes = await pool.query(
+          `SELECT * FROM user_profiles 
+           WHERE id = $1 
+              OR ($2 <> '' AND login_id = $2)
+              OR ($3 <> '' AND email = $3)
+           ORDER BY updated_at DESC LIMIT 1`,
+          [cleanRawId || '', cleanLoginId || '', cleanEmail || '']
+        );
+        if (checkRes.rows.length > 0) {
+          existingUser = checkRes.rows[0];
+        }
+      } catch (findErr) {
+        console.warn('⚠️ [DB 기존 유저 확인 경고]:', findErr.message);
       }
     }
-    // 2. 기존 레코드가 없을 때만 요청받은 UUID 또는 신규 UUID 발급
+
+    let validUserId = existingUser ? existingUser.id : null;
     if (!validUserId) {
       if (cleanRawId && uuidRegex.test(cleanRawId)) {
         validUserId = cleanRawId;
@@ -579,14 +582,56 @@ router.post('/profile', async (req, res) => {
         validUserId = toUuid(cleanRawId || cleanLoginId || cleanEmail);
       }
     }
-    const passwordHash = password ? crypto.createHash('sha256').update(String(password)).digest('hex') : null;
 
-    // PostgreSQL text[] 배열 타입 준수
-    const finalAllergies = noAllergy ? [] : (Array.isArray(allergies) ? allergies : [allergies].filter(Boolean));
-    const rawDiseases = diseases.length > 0 ? diseases : diseaseIds;
-    const finalDiseases = noDisease ? [] : (Array.isArray(rawDiseases) ? rawDiseases : [rawDiseases].filter(Boolean));
-    const finalMedications = noMedication ? [] : (Array.isArray(medications) ? medications : [medications].filter(Boolean));
-    const hasMedication = finalMedications.length > 0;
+    // 이름 및 생년월일: 신규 입력값이 없으면 기존 유저값 보존, 둘 다 없으면 기본값 적용
+    const finalName = (name || userName || existingUser?.user_name || '소요 여행자').trim();
+    const rawBirth = birth || birthDate || existingUser?.birth_date || '1970-01-01';
+    const finalBirth = rawBirth instanceof Date
+      ? rawBirth.toISOString().split('T')[0]
+      : String(rawBirth).split('T')[0];
+
+    // 부분 업데이트 여부 판별 (해당 필드가 body에 포함되었을 때만 갱신하고, 없으면 기존 DB 데이터 보존)
+    const hasAllergiesField = req.body.allergies !== undefined || req.body.noAllergy !== undefined;
+    const hasDiseasesField = req.body.diseases !== undefined || req.body.diseaseIds !== undefined || req.body.noDisease !== undefined;
+    const hasMedicationsField = req.body.medications !== undefined || req.body.noMedication !== undefined;
+
+    let finalAllergies;
+    if (hasAllergiesField) {
+      finalAllergies = noAllergy ? [] : (Array.isArray(allergies) ? allergies : [allergies].filter(Boolean));
+    } else if (existingUser) {
+      finalAllergies = Array.isArray(existingUser.allergies)
+        ? existingUser.allergies
+        : (existingUser.allergies ? String(existingUser.allergies).split(', ') : []);
+    } else {
+      finalAllergies = [];
+    }
+
+    let finalDiseases;
+    if (hasDiseasesField) {
+      const rawDiseases = diseases.length > 0 ? diseases : diseaseIds;
+      finalDiseases = noDisease ? [] : (Array.isArray(rawDiseases) ? rawDiseases : [rawDiseases].filter(Boolean));
+    } else if (existingUser) {
+      finalDiseases = Array.isArray(existingUser.chronic_conditions)
+        ? existingUser.chronic_conditions
+        : (existingUser.chronic_conditions ? String(existingUser.chronic_conditions).split(', ') : []);
+    } else {
+      finalDiseases = [];
+    }
+
+    let finalMedications;
+    let hasMedication;
+    if (hasMedicationsField) {
+      finalMedications = noMedication ? [] : (Array.isArray(medications) ? medications : [medications].filter(Boolean));
+      hasMedication = finalMedications.length > 0;
+    } else if (existingUser) {
+      hasMedication = existingUser.has_medication;
+      finalMedications = [];
+    } else {
+      finalMedications = [];
+      hasMedication = false;
+    }
+
+    const passwordHash = password ? crypto.createHash('sha256').update(String(password)).digest('hex') : null;
 
     // 생년월일 기반 나이 계산
     let calculatedAge = 50;
@@ -598,6 +643,7 @@ router.post('/profile', async (req, res) => {
     }
 
     let savedInDb = false;
+    let finalReturnMeds = [];
 
     // DB 연결 상태 확인 및 저장
     if (process.env.DATABASE_URL) {
@@ -609,9 +655,9 @@ router.post('/profile', async (req, res) => {
             login_id, password_hash, email, updated_at
           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
           ON CONFLICT (id) DO UPDATE SET
-            user_name = EXCLUDED.user_name,
-            birth_date = EXCLUDED.birth_date,
-            age = EXCLUDED.age,
+            user_name = COALESCE(EXCLUDED.user_name, user_profiles.user_name),
+            birth_date = COALESCE(EXCLUDED.birth_date, user_profiles.birth_date),
+            age = COALESCE(EXCLUDED.age, user_profiles.age),
             chronic_conditions = EXCLUDED.chronic_conditions,
             allergies = EXCLUDED.allergies,
             has_medication = EXCLUDED.has_medication,
@@ -629,51 +675,64 @@ router.post('/profile', async (req, res) => {
           finalDiseases,
           finalAllergies,
           hasMedication,
-          loginId || null,
-          passwordHash,
-          email || null
+          cleanLoginId || existingUser?.login_id || null,
+          passwordHash || existingUser?.password_hash || null,
+          cleanEmail || existingUser?.email || null
         ]);
 
-        // 2. user_medications 저장 (성분, 복용시간, 주의사항, DUR태그 풀 스펙 저장)
-        await pool.query('DELETE FROM user_medications WHERE user_id = $1', [validUserId]);
-        const enrichedMedList = [];
-        for (const med of finalMedications) {
-          const enriched = enrichMedication(med);
-          if (!enriched) continue;
-          const tagsStr = Array.isArray(enriched.durWarningTags)
-            ? enriched.durWarningTags.join(',')
-            : (enriched.durWarningTags || '');
-          await pool.query(
-            `
-            INSERT INTO user_medications (id, user_id, name, ingredient_name, timing, caution_note, dur_warning_tags)
-            VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
-          `,
-            [validUserId, enriched.name, enriched.ingredientName, enriched.timing, enriched.cautionNote, tagsStr]
+        // 2. user_medications 저장 (medications 필드가 명시적으로 들어온 경우에만 갱신, 아니면 기존 데이터 유지)
+        if (hasMedicationsField) {
+          await pool.query('DELETE FROM user_medications WHERE user_id = $1', [validUserId]);
+          for (const med of finalMedications) {
+            const enriched = enrichMedication(med);
+            if (!enriched) continue;
+            const tagsStr = Array.isArray(enriched.durWarningTags)
+              ? enriched.durWarningTags.join(',')
+              : (enriched.durWarningTags || '');
+            await pool.query(
+              `
+              INSERT INTO user_medications (id, user_id, name, ingredient_name, timing, caution_note, dur_warning_tags)
+              VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
+            `,
+              [validUserId, enriched.name, enriched.ingredientName, enriched.timing, enriched.cautionNote, tagsStr]
+            );
+            finalReturnMeds.push(enriched);
+          }
+        } else {
+          // 기존 약물 목록 조회
+          const medResult = await pool.query(
+            'SELECT id, name, ingredient_name, timing, caution_note, dur_warning_tags FROM user_medications WHERE user_id = $1 ORDER BY created_at ASC',
+            [validUserId]
           );
-          enrichedMedList.push(enriched);
+          finalReturnMeds = medResult.rows.map((r) => ({
+            id: r.id,
+            name: r.name,
+            ingredientName: r.ingredient_name || '',
+            timing: r.timing || '식후',
+            cautionNote: r.caution_note || '',
+            durWarningTags: r.dur_warning_tags ? r.dur_warning_tags.split(',').filter(Boolean) : []
+          }));
         }
 
         savedInDb = true;
-        console.log(`✅ [Supabase DB] 사용자 프로필 및 계정/복용약물 저장 완료: ${finalName} (${validUserId}) - 약물 ${enrichedMedList.length}건`);
+        console.log(`✅ [Supabase DB] 사용자 프로필 저장 완료: ${finalName} (${validUserId}) - 약물 ${finalReturnMeds.length}건`);
       } catch (dbErr) {
         console.error('❌ [Supabase DB] 프로필 저장 오류:', dbErr.message);
         return res.status(500).json({ error: `데이터베이스 저장 중 오류가 발생했습니다: ${dbErr.message}` });
       }
     } else {
       console.warn('⚠️ [Supabase DB] DATABASE_URL 미설정으로 DB 저장을 건너뜁니다.');
+      finalReturnMeds = finalMedications.map((m) => enrichMedication(m)).filter(Boolean);
     }
-
-    const formattedBirthDate = String(finalBirth).split('T')[0];
-    const finalReturnMeds = finalMedications.map((m) => enrichMedication(m)).filter(Boolean);
 
     const profileData = {
       id: validUserId,
       userId: validUserId,
       supabaseUserId: validUserId,
-      loginId: cleanLoginId || null,
-      email: cleanEmail || null,
+      loginId: cleanLoginId || existingUser?.login_id || null,
+      email: cleanEmail || existingUser?.email || null,
       userName: finalName,
-      birthDate: formattedBirthDate,
+      birthDate: finalBirth,
       age: calculatedAge,
       allergies: finalAllergies,
       chronicConditions: finalDiseases,
@@ -700,6 +759,8 @@ router.post('/profile', async (req, res) => {
 router.get('/profile/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
+    const queryEmail = req.query.email ? String(req.query.email).trim().toLowerCase() : null;
+
     if (!process.env.DATABASE_URL) {
       return res.status(503).json({ success: false, error: 'DB가 설정되지 않았습니다.' });
     }
@@ -711,6 +772,11 @@ router.get('/profile/:userId', async (req, res) => {
       result = await pool.query('SELECT * FROM user_profiles WHERE id = $1', [cleanId]);
     } else {
       result = await pool.query('SELECT * FROM user_profiles WHERE login_id = $1 OR email = $1', [cleanId]);
+    }
+
+    // UUID로 찾지 못했으나 쿼리스트링 이메일이 주어진 경우 이메일로 재조회
+    if (result.rows.length === 0 && queryEmail) {
+      result = await pool.query('SELECT * FROM user_profiles WHERE email = $1', [queryEmail]);
     }
 
     if (result.rows.length === 0) {
