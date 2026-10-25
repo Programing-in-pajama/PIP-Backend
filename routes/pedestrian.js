@@ -480,6 +480,17 @@ const handleRecommend = async (req, res) => {
         durationMin = cand.withRest.durationMin;
         distanceKm = cand.withRest.distanceKm;
 
+        const grade = evaluatedRest.grade || 'green';
+        const dot = evaluatedRest.dot || (grade === 'green' ? '🟢' : (grade === 'yellow' ? '🟡' : '🔴'));
+
+        // 등급(green/yellow/red)에 맞춰 뱃지 레이블 동기화 (예: 복합 안심 -> 복합 보통)
+        let dynamicBadgeLabel = evaluatedRest.badgeLabel || '안심식당';
+        if (grade === 'yellow') {
+          dynamicBadgeLabel = dynamicBadgeLabel.replace('안심', '보통');
+        } else if (grade === 'red') {
+          dynamicBadgeLabel = dynamicBadgeLabel.replace('복합 안심', '섭취 주의').replace('안심', '주의');
+        }
+
         restaurantDTO = {
           id: evaluatedRest.id,
           name: evaluatedRest.name,
@@ -490,10 +501,11 @@ const handleRecommend = async (req, res) => {
           calories: evaluatedRest.bestFood?.calories || 450,
           sodium: evaluatedRest.bestFood?.sodium || 500,
           sugar: evaluatedRest.bestFood?.sugar || 3.0,
-          grade: evaluatedRest.grade,
-          nutritionGrade: evaluatedRest.grade,
-          badgeLabel: evaluatedRest.badgeLabel || '안심식당',
-          gradeLabel: evaluatedRest.bestFood?.label || evaluatedRest.badgeLabel,
+          grade,
+          nutritionGrade: grade,
+          dot,
+          badgeLabel: dynamicBadgeLabel,
+          gradeLabel: evaluatedRest.bestFood?.label || `${dot} ${dynamicBadgeLabel}`,
           lat: evaluatedRest.location.lat,
           lng: evaluatedRest.location.lng,
           isSafeRestaurant: evaluatedRest.isSafeRestaurant
@@ -503,7 +515,7 @@ const handleRecommend = async (req, res) => {
       const hubShort = (startHub.name || '역곡역').split(' ')[0];
       const trailShort = cand.title.split(' ')[0];
       const waypointsText = includeRestaurant && restaurantDTO
-        ? `${hubShort} ➔ 🟢 ${restaurantDTO.name} ➔ ${trailShort} ➔ ${hubShort}`
+        ? `${hubShort} ➔ ${restaurantDTO.dot || '🟢'} ${restaurantDTO.name} ➔ ${trailShort} ➔ ${hubShort}`
         : `${hubShort} ➔ ${trailShort} ➔ ${hubShort}`;
 
       courses.push({
@@ -532,14 +544,21 @@ const handleRecommend = async (req, res) => {
       });
     }
 
+    // 🌿 질환 맞춤 안전 필터링: 섭취 주의(red) 식당 코스는 추천 목록에서 제외 (pass: green, yellow, 산책만)
+    const safeCourses = courses.filter(
+      (c) => !c.hasRestaurant || !c.restaurant || c.restaurant.grade !== 'red'
+    );
+    // 만약 모든 코스가 red일 경우에만 fallback으로 원본 유지, 그 외에는 안전 코스만 반환
+    const finalCourses = safeCourses.length > 0 ? safeCourses : courses;
+
     return res.json({
       success: true,
       data: {
         regionId,
         minutes,
         includeRestaurant,
-        count: courses.length,
-        courses
+        count: finalCourses.length,
+        courses: finalCourses
       }
     });
   } catch (error) {
