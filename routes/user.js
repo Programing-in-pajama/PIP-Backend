@@ -178,24 +178,26 @@ router.put('/profile', async (req, res) => {
       }
     }
 
-    let validUserId = existingUser ? existingUser.id : null;
-    if (!validUserId) {
-      if (cleanId && uuidRegex.test(cleanId)) {
-        validUserId = cleanId;
-      } else {
-        validUserId = toUuid(cleanId || cleanEmail);
-      }
+    let validUserId = null;
+    if (cleanId && uuidRegex.test(cleanId)) {
+      validUserId = cleanId;
+    } else if (existingUser) {
+      validUserId = existingUser.id;
+    } else {
+      validUserId = toUuid(cleanId || cleanEmail);
     }
+
+    const hasNameField = req.body.name !== undefined || req.body.userName !== undefined;
+    const hasBirthField = req.body.birth !== undefined || req.body.birthDate !== undefined;
+    const hasAllergiesField = req.body.allergies !== undefined || req.body.noAllergy !== undefined;
+    const hasDiseasesField = req.body.diseases !== undefined || req.body.diseaseIds !== undefined || req.body.noDisease !== undefined;
+    const hasMedicationsField = req.body.medications !== undefined || req.body.noMedication !== undefined;
 
     const finalUserName = (name || userName || existingUser?.user_name || '소요 여행자').trim();
     const finalBirthDateRaw = birth || birthDate || existingUser?.birth_date || '1970-01-01';
     const formattedBirthDate = finalBirthDateRaw instanceof Date
       ? finalBirthDateRaw.toISOString().split('T')[0]
       : String(finalBirthDateRaw).split('T')[0];
-
-    const hasAllergiesField = req.body.allergies !== undefined || req.body.noAllergy !== undefined;
-    const hasDiseasesField = req.body.diseases !== undefined || req.body.diseaseIds !== undefined || req.body.noDisease !== undefined;
-    const hasMedicationsField = req.body.medications !== undefined || req.body.noMedication !== undefined;
 
     let finalAllergies;
     if (hasAllergiesField) {
@@ -210,8 +212,8 @@ router.put('/profile', async (req, res) => {
 
     let finalDiseases;
     if (hasDiseasesField) {
-      const rawDiseases = diseases.length > 0 ? diseases : diseaseIds;
-      finalDiseases = noDisease ? [] : (Array.isArray(rawDiseases) ? rawDiseases : [rawDiseases].filter(Boolean));
+      const rawDiseases = (Array.isArray(diseases) && diseases.length > 0) ? diseases : (Array.isArray(diseaseIds) ? diseaseIds : []);
+      finalDiseases = noDisease ? [] : rawDiseases.filter(Boolean);
     } else if (existingUser) {
       finalDiseases = Array.isArray(existingUser.chronic_conditions)
         ? existingUser.chronic_conditions
@@ -233,7 +235,7 @@ router.put('/profile', async (req, res) => {
       hasMedication = false;
     }
 
-    let calculatedAge = 50;
+    let calculatedAge = existingUser?.age || 50;
     if (formattedBirthDate) {
       const birthYear = new Date(formattedBirthDate).getFullYear();
       if (!isNaN(birthYear)) {
@@ -249,17 +251,17 @@ router.put('/profile', async (req, res) => {
           id, user_name, birth_date, age, chronic_conditions, allergies, has_medication, email, updated_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
         ON CONFLICT (id) DO UPDATE SET
-          user_name = COALESCE(EXCLUDED.user_name, user_profiles.user_name),
-          birth_date = COALESCE(EXCLUDED.birth_date, user_profiles.birth_date),
-          age = COALESCE(EXCLUDED.age, user_profiles.age),
-          chronic_conditions = EXCLUDED.chronic_conditions,
-          allergies = EXCLUDED.allergies,
-          has_medication = EXCLUDED.has_medication,
+          user_name = CASE WHEN $9 THEN EXCLUDED.user_name ELSE user_profiles.user_name END,
+          birth_date = CASE WHEN $10 THEN EXCLUDED.birth_date ELSE user_profiles.birth_date END,
+          age = CASE WHEN $10 THEN EXCLUDED.age ELSE user_profiles.age END,
+          chronic_conditions = CASE WHEN $11 THEN EXCLUDED.chronic_conditions ELSE user_profiles.chronic_conditions END,
+          allergies = CASE WHEN $12 THEN EXCLUDED.allergies ELSE user_profiles.allergies END,
+          has_medication = CASE WHEN $13 THEN EXCLUDED.has_medication ELSE user_profiles.has_medication END,
           email = COALESCE(EXCLUDED.email, user_profiles.email),
           updated_at = CURRENT_TIMESTAMP
         RETURNING *;
       `;
-      await pool.query(profileQuery, [
+      const upsertRes = await pool.query(profileQuery, [
         validUserId,
         finalUserName,
         formattedBirthDate,
@@ -267,8 +269,20 @@ router.put('/profile', async (req, res) => {
         finalDiseases,
         finalAllergies,
         hasMedication,
-        cleanEmail || existingUser?.email || null
+        cleanEmail || existingUser?.email || null,
+        hasNameField,
+        hasBirthField,
+        hasDiseasesField,
+        hasAllergiesField,
+        hasMedicationsField
       ]);
+
+      const savedRow = upsertRes.rows[0];
+      if (savedRow) {
+        finalAllergies = Array.isArray(savedRow.allergies) ? savedRow.allergies : finalAllergies;
+        finalDiseases = Array.isArray(savedRow.chronic_conditions) ? savedRow.chronic_conditions : finalDiseases;
+        hasMedication = savedRow.has_medication;
+      }
 
       if (hasMedicationsField) {
         await pool.query('DELETE FROM user_medications WHERE user_id = $1', [validUserId]);
