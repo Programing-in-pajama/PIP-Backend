@@ -582,8 +582,8 @@ router.post('/email/send-code', async (req, res) => {
       emailSent,
       provider: providerName,
       message: emailSent
-        ? `인증번호가 이메일로 발송되었습니다. 메일함을 확인해주세요. [인증번호: ${localCode}]`
-        : `인증번호가 발송되었습니다. [인증번호: ${localCode}] (화면에 안내된 번호를 입력해주세요)`
+        ? '인증번호가 이메일로 발송되었습니다. 메일함을 확인해주세요.'
+        : '인증번호가 발송되었습니다. 메일함을 확인해주세요.'
     });
   } catch (err) {
     console.error('이메일 발송 라우트 에러:', err);
@@ -1064,8 +1064,8 @@ router.post('/password-reset/send-code', async (req, res) => {
       provider: providerName,
       maskedEmail: maskEmail(userEmail),
       message: emailSent
-        ? `등록된 이메일(${maskEmail(userEmail)})로 인증번호가 발송되었습니다. [인증번호: ${localCode}]`
-        : `인증번호가 발송되었습니다. [인증번호: ${localCode}] (화면에 안내된 번호를 입력해주세요)`
+        ? `등록된 이메일(${maskEmail(userEmail)})로 인증번호가 발송되었습니다. 메일함을 확인해주세요.`
+        : '인증번호가 발송되었습니다. 메일함을 확인해주세요.'
     });
   } catch (err) {
     console.error('❌ [비밀번호 재설정 코드 발송 에러]:', err);
