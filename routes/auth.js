@@ -22,6 +22,42 @@ function toUuid(id) {
   ].join('-');
 }
 
+// 이메일 및 본인확인 감사 로그 인메모리 링버퍼 (최근 100건 보관)
+const MAX_EMAIL_LOGS = 100;
+const emailActionLogs = [];
+
+function recordEmailLog({ action, email = '', loginId = '', status = 'INFO', provider = 'SYSTEM', code = '', error = null, details = '' }) {
+  const now = new Date();
+  const kstTimeStr = new Intl.DateTimeFormat('ko-KR', {
+    dateStyle: 'short',
+    timeStyle: 'medium',
+    timeZone: 'Asia/Seoul'
+  }).format(now);
+
+  const logEntry = {
+    id: `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    timestamp: now.toISOString(),
+    timeStr: kstTimeStr,
+    action,
+    email: String(email || '').trim(),
+    loginId: String(loginId || '').trim(),
+    status, // 'SUCCESS' | 'FAIL' | 'INFO' | 'WARNING'
+    provider, // 'Nodemailer(SMTP)' | 'Supabase Auth' | '로컬 인증코드(Fallback)' | 'AWS RDS'
+    code: code ? String(code) : null,
+    error: error ? (error.message || String(error)) : null,
+    details
+  };
+
+  emailActionLogs.unshift(logEntry);
+  if (emailActionLogs.length > MAX_EMAIL_LOGS) {
+    emailActionLogs.pop();
+  }
+
+  const logSymbol = status === 'SUCCESS' ? '✅' : status === 'FAIL' ? '❌' : 'ℹ️';
+  console.log(`${logSymbol} [인증/이메일 로그] [${status}] ${action} | 대상: ${email || loginId || 'N/A'} | 제공자: ${provider} | 코드: [${code || '없음'}] ${error ? `| 오류: ${error.message || error}` : ''}`);
+  return logEntry;
+}
+
 // 이메일 인증코드 메모리 캐시: cleanEmail -> { code, expiresAt, attempts }
 const emailVerificationCodes = new Map();
 
@@ -56,11 +92,186 @@ function getEmailTransporter() {
   return null;
 }
 
+// ─── 실시간 이메일/인증 진단 로그 조회 API (JSON) ───
+router.get('/email/logs', (req, res) => {
+  const smtpConfigured = Boolean((process.env.SMTP_USER || process.env.SMTP_EMAIL) && (process.env.SMTP_PASS || process.env.SMTP_PASSWORD));
+  const supabaseConfigured = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY);
+  const databaseConfigured = Boolean(process.env.DATABASE_URL);
+
+  return res.json({
+    success: true,
+    count: emailActionLogs.length,
+    systemStatus: {
+      smtpConfigured,
+      smtpHost: process.env.SMTP_HOST || 'smtp.gmail.com',
+      smtpUser: (process.env.SMTP_USER || process.env.SMTP_EMAIL) ? '설정됨 (마스킹)' : '미설정',
+      supabaseConfigured,
+      databaseConfigured
+    },
+    logs: emailActionLogs
+  });
+});
+
+// 이메일 진단 로그 비우기
+router.delete('/email/logs', (req, res) => {
+  emailActionLogs.length = 0;
+  return res.json({ success: true, message: '이메일 진단 로그가 초기화되었습니다.' });
+});
+
+// ─── 실시간 이메일/인증 진단 웹 대시보드 (HTML 뷰) ───
+router.get('/email/logs-view', (req, res) => {
+  const smtpConfigured = Boolean((process.env.SMTP_USER || process.env.SMTP_EMAIL) && (process.env.SMTP_PASS || process.env.SMTP_PASSWORD));
+  const supabaseConfigured = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY);
+  const databaseConfigured = Boolean(process.env.DATABASE_URL);
+
+  const rowsHtml = emailActionLogs.length === 0
+    ? `<tr><td colspan="7" style="text-align:center; padding: 32px; color: #6b7280;">최근 기록된 이메일/인증 시도 로그가 없습니다.</td></tr>`
+    : emailActionLogs.map((log) => {
+        const badgeColor = log.status === 'SUCCESS' ? '#16a34a' : log.status === 'FAIL' ? '#dc2626' : '#d97706';
+        const badgeBg = log.status === 'SUCCESS' ? '#dcfce7' : log.status === 'FAIL' ? '#fee2e2' : '#fef3c7';
+        return `
+          <tr style="border-bottom: 1px solid #f3f4f6;">
+            <td style="padding: 12px 10px; font-size: 13px; color: #4b5563; white-space: nowrap;">${log.timeStr}</td>
+            <td style="padding: 12px 10px; font-size: 14px; font-weight: 600; color: #111827;">${log.action}</td>
+            <td style="padding: 12px 10px; font-size: 13px; font-family: monospace; color: #1f2937;">${log.email || log.loginId || '-'}</td>
+            <td style="padding: 12px 10px; font-size: 13px; color: #374151;">${log.provider}</td>
+            <td style="padding: 12px 10px; text-align: center;">
+              ${log.code ? `<span style="display:inline-block; font-size: 16px; font-weight: 700; font-family: monospace; letter-spacing: 2px; color: #15803d; background: #f0fdf4; border: 1px solid #bbf7d0; padding: 3px 8px; border-radius: 6px;">${log.code}</span>` : '-'}
+            </td>
+            <td style="padding: 12px 10px; text-align: center;">
+              <span style="display:inline-block; font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 12px; color: ${badgeColor}; background: ${badgeBg};">${log.status}</span>
+            </td>
+            <td style="padding: 12px 10px; font-size: 12px; color: ${log.error ? '#dc2626' : '#4b5563'}; line-height: 1.4;">
+              ${log.details}
+              ${log.error ? `<br/><strong style="color: #b91c1c;">⚠️ 사유:</strong> ${log.error}` : ''}
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="ko">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>🌿 SOYO 이메일 & 본인인증 실시간 진단 대시보드</title>
+      <style>
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f9fafb; margin: 0; padding: 24px; color: #111827; }
+        .container { max-width: 1200px; margin: 0 auto; background: #ffffff; border-radius: 16px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -2px rgba(0,0,0,0.05); }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #f3f4f6; padding-bottom: 16px; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+        .header h1 { font-size: 20px; font-weight: 700; color: #15803d; margin: 0; display: flex; align-items: center; gap: 8px; }
+        .badge-bar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+        .status-pill { font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 20px; display: inline-flex; align-items: center; gap: 6px; }
+        .pill-on { background: #dcfce7; color: #166534; }
+        .pill-off { background: #fee2e2; color: #991b1b; }
+        .actions-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
+        .btn { padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+        .btn-refresh { background: #15803d; color: #ffffff; }
+        .btn-refresh:hover { background: #166534; }
+        .btn-clear { background: #f3f4f6; color: #4b5563; }
+        .btn-clear:hover { background: #e5e7eb; }
+        .table-wrap { overflow-x: auto; border: 1px solid #e5e7eb; border-radius: 10px; }
+        table { width: 100%; border-collapse: collapse; text-align: left; }
+        th { background: #f9fafb; padding: 12px 10px; font-size: 12px; font-weight: 600; color: #6b7280; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
+        .help-box { margin-top: 24px; padding: 16px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px; font-size: 13px; color: #166534; line-height: 1.6; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>🌿 SOYO (소요) 이메일 및 본인인증 실시간 진단 대시보드</h1>
+          <div>
+            <label style="font-size: 13px; color: #4b5563; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+              <input type="checkbox" id="autoRefresh" checked> 5초마다 자동 새로고침
+            </label>
+          </div>
+        </div>
+
+        <div class="badge-bar">
+          <span class="status-pill ${smtpConfigured ? 'pill-on' : 'pill-off'}">
+            ● SMTP 메일서버: ${smtpConfigured ? '연결됨 (실제 이메일 전송 가능)' : '미설정 (로컬 코드 자동발급 모드)'}
+          </span>
+          <span class="status-pill ${supabaseConfigured ? 'pill-on' : 'pill-off'}">
+            ● Supabase Auth OTP: ${supabaseConfigured ? '활성화' : '비활성'}
+          </span>
+          <span class="status-pill ${databaseConfigured ? 'pill-on' : 'pill-off'}">
+            ● AWS RDS PostgreSQL: ${databaseConfigured ? '연결됨' : '미연결'}
+          </span>
+        </div>
+
+        <div class="actions-bar">
+          <div style="font-size: 13px; color: #6b7280;">최근 시도 내역 (최신 ${emailActionLogs.length}건 / 최대 100건)</div>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-refresh" onclick="location.reload()">🔄 지금 새로고침</button>
+            <button class="btn btn-clear" onclick="clearLogs()">🗑️ 로그 비우기</button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>발생 일시 (KST)</th>
+                <th>작업 구분</th>
+                <th>대상 (이메일/아이디)</th>
+                <th>제공자</th>
+                <th style="text-align: center;">발급 인증번호</th>
+                <th style="text-align: center;">상태</th>
+                <th>상세 안내 및 오류 사유</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="help-box">
+          <strong>💡 실시간 테스트 팁:</strong><br/>
+          * SMTP(구글/네이버 등 메일계정)가 미설정된 환경에서도, 위 테이블의 <strong>[발급 인증번호]</strong>를 복사하여 회원가입 및 비밀번호 재설정에 즉시 사용하실 수 있습니다.<br/>
+          * 회원이 실제 메일을 받지 못한 경우, 상단 상태바에서 메일서버 설정 여부를 확인하시거나 위 발급번호를 직접 입력하시면 정상 통과됩니다.
+        </div>
+      </div>
+
+      <script>
+        let timer = setInterval(() => {
+          if (document.getElementById('autoRefresh').checked) {
+            location.reload();
+          }
+        }, 5000);
+
+        async function clearLogs() {
+          if (!confirm('진단 로그를 모두 삭제하시겠습니까?')) return;
+          try {
+            await fetch('/api/auth/email/logs', { method: 'DELETE' });
+            location.reload();
+          } catch (e) {
+            alert('로그 삭제 실패: ' + e.message);
+          }
+        }
+      </script>
+    </body>
+    </html>
+  `;
+
+  return res.send(html);
+});
+
 // 이메일 인증 코드 발송
 router.post('/email/send-code', async (req, res) => {
   try {
     const { email, type = 'signup' } = req.body;
     if (!email || !email.includes('@')) {
+      recordEmailLog({
+        action: '이메일 인증번호 발송 요청',
+        email,
+        status: 'FAIL',
+        provider: '유효성 검사',
+        error: '올바른 이메일 형식이 아님',
+        details: '잘못된 이메일 주소 형식 입력 차단'
+      });
       return res.status(400).json({ success: false, error: '올바른 이메일 주소를 입력해주세요.' });
     }
 
@@ -91,6 +302,14 @@ router.post('/email/send-code', async (req, res) => {
 
         if (completedUser) {
           console.warn(`⚠️ [회원가입 이메일 중복 차단]: 이미 가입 완료된 계정입니다. (${cleanEmail})`);
+          recordEmailLog({
+            action: '회원가입 인증번호 발송',
+            email: cleanEmail,
+            status: 'FAIL',
+            provider: 'AWS RDS DB',
+            error: '이미 가입 완료된 이메일 (409)',
+            details: `아이디: ${completedUser.login_id || '소셜'}로 이미 가입된 계정`
+          });
           return res.status(409).json({
             success: false,
             alreadyRegistered: true,
@@ -128,6 +347,8 @@ router.post('/email/send-code', async (req, res) => {
     });
 
     let emailSent = false;
+    let providerName = '로컬 인증코드(Fallback)';
+    let deliveryError = null;
 
     // 2. Nodemailer SMTP 발송 시도 (설정된 경우)
     const transporter = getEmailTransporter();
@@ -156,8 +377,10 @@ router.post('/email/send-code', async (req, res) => {
           `
         });
         emailSent = true;
+        providerName = 'Nodemailer(SMTP)';
         console.log(`✅ [Nodemailer] 이메일 발송 성공: ${cleanEmail}`);
       } catch (smtpErr) {
+        deliveryError = smtpErr;
         console.warn('⚠️ [Nodemailer 발송 실패, Supabase/로컬 모드 가동]:', smtpErr.message);
       }
     }
@@ -166,23 +389,41 @@ router.post('/email/send-code', async (req, res) => {
     if (!emailSent && supabase) {
       try {
         console.log(`🚀 [Supabase Auth] 이메일 OTP 발송 요청: ${cleanEmail}`);
+        // 회원가입 시에는 신규 가입 생성을 허용(shouldCreateUser: true)해야 메일이 발송됨
         const { error: sbError } = await supabase.auth.signInWithOtp({
           email: cleanEmail,
           options: {
-            shouldCreateUser: false
+            shouldCreateUser: type === 'signup'
           }
         });
 
         if (sbError) {
+          deliveryError = sbError;
           console.warn('⚠️ [Supabase Auth OTP 발송 실패/제한]:', sbError.message);
         } else {
           emailSent = true;
+          providerName = 'Supabase Auth';
+          deliveryError = null;
           console.log(`✅ [Supabase Auth] 이메일 OTP 발송 성공: ${cleanEmail}`);
         }
       } catch (sbCatchErr) {
+        deliveryError = sbCatchErr;
         console.warn('⚠️ [Supabase Auth 호출 예외]:', sbCatchErr.message);
       }
     }
+
+    // 로그 기록
+    recordEmailLog({
+      action: type === 'signup' ? '회원가입 인증번호 발송' : '본인확인 인증번호 발송',
+      email: cleanEmail,
+      status: emailSent ? 'SUCCESS' : 'INFO',
+      provider: providerName,
+      code: localCode,
+      error: deliveryError,
+      details: emailSent
+        ? `${providerName}를 통해 사용자 메일함으로 발송 완료`
+        : `메일서버 미설정 또는 제한으로 로컬 인증번호 즉시 발급 (코드: ${localCode})`
+    });
 
     console.log(`📨 [인증번호 발송 완료] 대상: ${cleanEmail}, 코드: [${localCode}] (발송 성공 여부: ${emailSent})`);
     return res.json({
@@ -196,6 +437,14 @@ router.post('/email/send-code', async (req, res) => {
     });
   } catch (err) {
     console.error('이메일 발송 라우트 에러:', err);
+    recordEmailLog({
+      action: '이메일 인증번호 발송 처리',
+      email: req.body?.email || '',
+      status: 'FAIL',
+      provider: '서버 내부',
+      error: err,
+      details: '서버 내부 오류로 발송 중단'
+    });
     return res.status(500).json({ success: false, error: '서버 내부 오류가 발생했습니다.' });
   }
 });
@@ -205,6 +454,14 @@ router.post('/email/verify-code', async (req, res) => {
   try {
     const { email, code } = req.body;
     if (!email || !code) {
+      recordEmailLog({
+        action: '이메일 인증 확인',
+        email,
+        status: 'FAIL',
+        provider: '유효성 검사',
+        error: '이메일 또는 인증번호 미입력',
+        details: '필수 입력값 누락'
+      });
       return res.status(400).json({ success: false, verified: false, error: '이메일과 인증코드를 모두 입력해주세요.' });
     }
 
@@ -216,11 +473,29 @@ router.post('/email/verify-code', async (req, res) => {
     if (entry) {
       if (Date.now() > entry.expiresAt) {
         emailVerificationCodes.delete(cleanEmail);
+        recordEmailLog({
+          action: '이메일 인증 확인',
+          email: cleanEmail,
+          status: 'FAIL',
+          provider: '로컬 캐시',
+          code: cleanCode,
+          error: '인증코드 유효시간(5분) 만료',
+          details: '유효시간 만료로 검증 실패'
+        });
         return res.status(400).json({ success: false, verified: false, error: '인증코드 유효시간(5분)이 만료되었습니다. 다시 발송해주세요.' });
       }
 
       if (entry.attempts >= 5) {
         emailVerificationCodes.delete(cleanEmail);
+        recordEmailLog({
+          action: '이메일 인증 확인',
+          email: cleanEmail,
+          status: 'FAIL',
+          provider: '로컬 캐시',
+          code: cleanCode,
+          error: '인증 시도 횟수(5회) 초과',
+          details: '연속 5회 오입력으로 인증번호 폐기'
+        });
         return res.status(400).json({ success: false, verified: false, error: '인증 시도 횟수를 초과했습니다. 다시 발송해주세요.' });
       }
 
@@ -228,6 +503,14 @@ router.post('/email/verify-code', async (req, res) => {
 
       if (entry.code === cleanCode) {
         emailVerificationCodes.delete(cleanEmail);
+        recordEmailLog({
+          action: '이메일 인증 확인',
+          email: cleanEmail,
+          status: 'SUCCESS',
+          provider: '로컬 검증',
+          code: cleanCode,
+          details: '6자리 인증번호 일치 (인증 성공)'
+        });
         console.log(`✅ [이메일 인증 성공] 대상: ${cleanEmail}`);
         return res.json({ success: true, verified: true, message: '이메일 인증이 완료되었습니다.' });
       }
@@ -256,6 +539,14 @@ router.post('/email/verify-code', async (req, res) => {
         if (!sbRes.error && sbRes.data) {
           console.log(`✅ [Supabase Auth 이메일 인증 성공] 대상: ${cleanEmail}`);
           emailVerificationCodes.delete(cleanEmail);
+          recordEmailLog({
+            action: '이메일 인증 확인',
+            email: cleanEmail,
+            status: 'SUCCESS',
+            provider: 'Supabase Auth',
+            code: cleanCode,
+            details: 'Supabase Auth OTP 검증 성공'
+          });
           return res.json({
             success: true,
             verified: true,
@@ -267,22 +558,40 @@ router.post('/email/verify-code', async (req, res) => {
       }
     }
 
+    recordEmailLog({
+      action: '이메일 인증 확인',
+      email: cleanEmail,
+      status: 'FAIL',
+      provider: '검증 처리',
+      code: cleanCode,
+      error: '인증번호 불일치',
+      details: `입력값(${cleanCode}) 불일치 또는 유효한 인증번호 없음`
+    });
+
     return res.status(400).json({ success: false, verified: false, error: '인증번호가 일치하지 않거나 만료되었습니다. 다시 확인해주세요.' });
   } catch (err) {
     console.error('인증코드 검증 라우트 에러:', err);
+    recordEmailLog({
+      action: '이메일 인증 확인',
+      email: req.body?.email || '',
+      status: 'FAIL',
+      provider: '서버 내부',
+      error: err,
+      details: '인증코드 검증 중 서버 예외'
+    });
     return res.status(500).json({ success: false, verified: false, error: '서버 내부 오류가 발생했습니다.' });
   }
 });
 
-// 비밀번호 재설정 인증코드 메모리 캐시: cleanLoginId -> { code, expiresAt, attempts, email, verified }
+// 비밀번호 재설정 인증코드 메모리 캐시: key(cleanLoginId/email) -> { code, expiresAt, attempts, email, loginId, verified }
 const passwordResetCodes = new Map();
 
 // 주기적으로 만료된 비밀번호 재설정 인증코드 정리 (10분 간격)
 setInterval(() => {
   const now = Date.now();
-  for (const [loginId, entry] of passwordResetCodes.entries()) {
+  for (const [key, entry] of passwordResetCodes.entries()) {
     if (now > entry.expiresAt) {
-      passwordResetCodes.delete(loginId);
+      passwordResetCodes.delete(key);
     }
   }
 }, 10 * 60 * 1000).unref();
@@ -292,6 +601,14 @@ router.post('/find-id', async (req, res) => {
   try {
     const { name, email } = req.body;
     if (!name || !email) {
+      recordEmailLog({
+        action: '아이디 찾기 요청',
+        email,
+        status: 'FAIL',
+        provider: '유효성 검사',
+        error: '이름 또는 이메일 미입력',
+        details: '필수 파라미터 누락'
+      });
       return res.status(400).json({ success: false, error: '이름과 이메일을 모두 입력해주세요.' });
     }
 
@@ -302,22 +619,58 @@ router.post('/find-id', async (req, res) => {
     const cleanName = String(name).trim();
     const cleanEmail = String(email).trim().toLowerCase();
 
+    // 대소문자 및 양쪽 공백 무시 안전 조회
     const result = await pool.query(`
       SELECT login_id, user_name, email FROM user_profiles
-      WHERE TRIM(user_name) = $1 AND LOWER(TRIM(email)) = $2
+      WHERE LOWER(TRIM(user_name)) = LOWER(TRIM($1)) AND LOWER(TRIM(email)) = $2
       ORDER BY updated_at DESC
       LIMIT 1;
     `, [cleanName, cleanEmail]);
 
     if (result.rows.length === 0 || !result.rows[0].login_id) {
+      // 혹시 이름에 공백이 포함되어 있거나 미세하게 다른 경우 이메일 단독 매칭으로 보조 확인
+      const emailOnlyCheck = await pool.query(`
+        SELECT login_id, user_name FROM user_profiles
+        WHERE LOWER(TRIM(email)) = $1
+        ORDER BY updated_at DESC
+        LIMIT 1;
+      `, [cleanEmail]);
+
+      recordEmailLog({
+        action: '아이디 찾기 요청',
+        email: cleanEmail,
+        status: 'FAIL',
+        provider: 'AWS RDS DB',
+        error: '일치 계정 없음',
+        details: emailOnlyCheck.rows.length > 0
+          ? `이메일은 존재하나 이름 불일치 (입력: '${cleanName}', 등록명: '${emailOnlyCheck.rows[0].user_name || ''}')`
+          : `입력하신 이메일(${cleanEmail})로 등록된 프로필이 없음`
+      });
+
       return res.status(404).json({ success: false, error: '입력하신 정보와 일치하는 계정을 찾을 수 없습니다.' });
     }
 
     const loginId = result.rows[0].login_id;
+    recordEmailLog({
+      action: '아이디 찾기 요청',
+      email: cleanEmail,
+      loginId,
+      status: 'SUCCESS',
+      provider: 'AWS RDS DB',
+      details: `아이디 조회 성공: ${loginId}`
+    });
     console.log(`✅ [아이디 찾기 성공] 이름: ${cleanName}, 이메일: ${cleanEmail} -> 아이디: ${loginId}`);
     return res.json({ success: true, loginId });
   } catch (err) {
     console.error('❌ [아이디 찾기 에러]:', err);
+    recordEmailLog({
+      action: '아이디 찾기 요청',
+      email: req.body?.email || '',
+      status: 'FAIL',
+      provider: '서버 내부',
+      error: err,
+      details: '아이디 찾기 처리 중 DB 예외 발생'
+    });
     return res.status(500).json({ success: false, error: '아이디 찾기 중 서버 오류가 발생했습니다.' });
   }
 });
@@ -327,6 +680,14 @@ router.post('/password-reset/send-code', async (req, res) => {
   try {
     const { loginId } = req.body;
     if (!loginId) {
+      recordEmailLog({
+        action: '비밀번호 재설정 인증번호 발송',
+        loginId,
+        status: 'FAIL',
+        provider: '유효성 검사',
+        error: '아이디 미입력',
+        details: '아이디 파라미터 누락'
+      });
       return res.status(400).json({ success: false, error: '아이디를 입력해주세요.' });
     }
 
@@ -335,30 +696,55 @@ router.post('/password-reset/send-code', async (req, res) => {
     }
 
     const cleanId = String(loginId).trim();
+    const cleanIdLower = cleanId.toLowerCase();
+
+    // 대소문자 무시 및 아이디 또는 이메일로 다중 매칭
     const result = await pool.query(`
-      SELECT login_id, email, user_name FROM user_profiles
-      WHERE login_id = $1 OR email = $1
+      SELECT login_id, email, user_name, password_hash FROM user_profiles
+      WHERE LOWER(TRIM(login_id)) = $1 OR LOWER(TRIM(email)) = $1
       ORDER BY updated_at DESC
       LIMIT 1;
-    `, [cleanId]);
+    `, [cleanIdLower]);
 
     if (result.rows.length === 0 || !result.rows[0].email) {
+      recordEmailLog({
+        action: '비밀번호 재설정 인증번호 발송',
+        loginId: cleanId,
+        status: 'FAIL',
+        provider: 'AWS RDS DB',
+        error: '계정 없음 (404)',
+        details: `아이디 또는 이메일 '${cleanId}' 에 해당하는 유저를 DB에서 찾을 수 없음`
+      });
       return res.status(404).json({ success: false, error: '존재하지 않는 아이디이거나 등록된 이메일이 없습니다.' });
     }
 
-    const userEmail = result.rows[0].email.trim().toLowerCase();
+    const matchedUser = result.rows[0];
+    const userEmail = matchedUser.email.trim().toLowerCase();
+    const actualLoginId = matchedUser.login_id ? matchedUser.login_id.trim() : cleanId;
     const localCode = crypto.randomInt(100000, 1000000).toString();
     const expiresAt = Date.now() + 5 * 60 * 1000;
 
-    passwordResetCodes.set(cleanId.toLowerCase(), {
+    const resetEntry = {
       code: localCode,
       email: userEmail,
+      loginId: actualLoginId,
       expiresAt,
       attempts: 0,
       verified: false
-    });
+    };
+
+    // 사용자가 아이디나 이메일 중 어느 것으로 요청/검증해도 인식되도록 양방향 키 등록
+    passwordResetCodes.set(cleanIdLower, resetEntry);
+    passwordResetCodes.set(userEmail, resetEntry);
+    if (actualLoginId) {
+      passwordResetCodes.set(actualLoginId.toLowerCase(), resetEntry);
+    }
 
     let emailSent = false;
+    let providerName = '로컬 인증코드(Fallback)';
+    let deliveryError = null;
+
+    // Nodemailer 발송 시도
     const transporter = getEmailTransporter();
     if (transporter) {
       try {
@@ -371,7 +757,7 @@ router.post('/password-reset/send-code', async (req, res) => {
             <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background-color: #ffffff;">
               <h2 style="color: #15803d; margin-top: 0;">🌿 SOYO (소요) 비밀번호 재설정</h2>
               <p style="color: #374151; font-size: 15px; line-height: 1.6;">
-                요청하신 비밀번호 재설정 인증번호입니다.
+                안녕하세요! 요청하신 비밀번호 재설정 인증번호입니다.
               </p>
               <div style="background-color: #f0fdf4; border: 2px solid #86efac; border-radius: 8px; padding: 18px; text-align: center; margin: 24px 0;">
                 <span style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #166534;">${localCode}</span>
@@ -383,8 +769,10 @@ router.post('/password-reset/send-code', async (req, res) => {
           `
         });
         emailSent = true;
+        providerName = 'Nodemailer(SMTP)';
         console.log(`✅ [Nodemailer] 비밀번호 재설정 메일 발송 성공: ${userEmail}`);
       } catch (smtpErr) {
+        deliveryError = smtpErr;
         console.warn('⚠️ [Nodemailer 비밀번호 재설정 메일 발송 실패]:', smtpErr.message);
       }
     }
@@ -399,13 +787,33 @@ router.post('/password-reset/send-code', async (req, res) => {
         });
         if (!sbErr) {
           emailSent = true;
+          providerName = 'Supabase Auth';
+          deliveryError = null;
+        } else {
+          deliveryError = sbErr;
+          console.warn('⚠️ [비밀번호 재설정 Supabase OTP 실패/제한]:', sbErr.message);
         }
       } catch (sbErr) {
+        deliveryError = sbErr;
         console.warn('⚠️ [비밀번호 재설정 Supabase OTP 예외]:', sbErr.message);
       }
     }
 
-    console.log(`📨 [비밀번호 재설정 인증코드 발송] 아이디: ${cleanId}, 이메일: ${userEmail}, 코드: [${localCode}] (메일 발송 여부: ${emailSent})`);
+    // 로그 기록
+    recordEmailLog({
+      action: '비밀번호 재설정 인증번호 발송',
+      loginId: actualLoginId,
+      email: userEmail,
+      status: emailSent ? 'SUCCESS' : 'INFO',
+      provider: providerName,
+      code: localCode,
+      error: deliveryError,
+      details: emailSent
+        ? `${providerName}를 통해 등록된 이메일(${userEmail})로 발송 완료`
+        : `메일서버 미설정 또는 제한으로 인증번호 즉시 발급 (코드: ${localCode})`
+    });
+
+    console.log(`📨 [비밀번호 재설정 인증코드 발송] 아이디: ${actualLoginId}, 이메일: ${userEmail}, 코드: [${localCode}] (메일 발송 여부: ${emailSent})`);
     return res.json({
       success: true,
       code: localCode,
@@ -417,6 +825,14 @@ router.post('/password-reset/send-code', async (req, res) => {
     });
   } catch (err) {
     console.error('❌ [비밀번호 재설정 코드 발송 에러]:', err);
+    recordEmailLog({
+      action: '비밀번호 재설정 인증번호 발송',
+      loginId: req.body?.loginId || '',
+      status: 'FAIL',
+      provider: '서버 내부',
+      error: err,
+      details: '서버 오류로 인증코드 발송 중단'
+    });
     return res.status(500).json({ success: false, error: '인증번호 발송 중 서버 오류가 발생했습니다.' });
   }
 });
@@ -426,6 +842,14 @@ router.post('/password-reset/verify-code', async (req, res) => {
   try {
     const { loginId, code } = req.body;
     if (!loginId || !code) {
+      recordEmailLog({
+        action: '비밀번호 재설정 인증 확인',
+        loginId,
+        status: 'FAIL',
+        provider: '유효성 검사',
+        error: '아이디 또는 인증번호 미입력',
+        details: '필수 파라미터 누락'
+      });
       return res.status(400).json({ success: false, verified: false, error: '아이디와 인증번호를 입력해주세요.' });
     }
 
@@ -434,16 +858,45 @@ router.post('/password-reset/verify-code', async (req, res) => {
     const entry = passwordResetCodes.get(cleanId);
 
     if (!entry) {
+      recordEmailLog({
+        action: '비밀번호 재설정 인증 확인',
+        loginId: cleanId,
+        status: 'FAIL',
+        provider: '로컬 캐시',
+        code: cleanCode,
+        error: '발급 이력 없음',
+        details: `아이디/이메일 '${cleanId}'에 대해 발급된 인증번호가 없음`
+      });
       return res.status(400).json({ success: false, verified: false, error: '인증번호를 먼저 요청해주세요.' });
     }
 
     if (Date.now() > entry.expiresAt) {
       passwordResetCodes.delete(cleanId);
+      recordEmailLog({
+        action: '비밀번호 재설정 인증 확인',
+        loginId: cleanId,
+        email: entry.email,
+        status: 'FAIL',
+        provider: '로컬 캐시',
+        code: cleanCode,
+        error: '인증번호 유효시간(5분) 만료',
+        details: '만료로 인증 실패'
+      });
       return res.status(400).json({ success: false, verified: false, error: '인증번호 유효시간(5분)이 만료되었습니다. 다시 요청해주세요.' });
     }
 
     if (entry.attempts >= 5) {
       passwordResetCodes.delete(cleanId);
+      recordEmailLog({
+        action: '비밀번호 재설정 인증 확인',
+        loginId: cleanId,
+        email: entry.email,
+        status: 'FAIL',
+        provider: '로컬 캐시',
+        code: cleanCode,
+        error: '시도 횟수 초과',
+        details: '5회 연속 실패로 폐기'
+      });
       return res.status(400).json({ success: false, verified: false, error: '인증 시도 횟수를 초과했습니다. 다시 발송해주세요.' });
     }
 
@@ -468,13 +921,41 @@ router.post('/password-reset/verify-code', async (req, res) => {
 
     if (sbVerified || entry.code === cleanCode) {
       entry.verified = true;
+      recordEmailLog({
+        action: '비밀번호 재설정 인증 확인',
+        loginId: cleanId,
+        email: entry.email,
+        status: 'SUCCESS',
+        provider: sbVerified ? 'Supabase Auth' : '로컬 검증',
+        code: cleanCode,
+        details: '비밀번호 재설정 인증번호 일치 (인증 성공)'
+      });
       console.log(`✅ [비밀번호 재설정 인증 성공] 아이디: ${cleanId}`);
       return res.json({ success: true, verified: true, message: '인증이 완료되었습니다.' });
     }
 
+    recordEmailLog({
+      action: '비밀번호 재설정 인증 확인',
+      loginId: cleanId,
+      email: entry.email,
+      status: 'FAIL',
+      provider: '검증 처리',
+      code: cleanCode,
+      error: '인증번호 불일치',
+      details: `입력된 코드(${cleanCode}) 불일치`
+    });
+
     return res.status(400).json({ success: false, verified: false, error: '인증번호가 일치하지 않습니다.' });
   } catch (err) {
     console.error('❌ [비밀번호 재설정 코드 검증 에러]:', err);
+    recordEmailLog({
+      action: '비밀번호 재설정 인증 확인',
+      loginId: req.body?.loginId || '',
+      status: 'FAIL',
+      provider: '서버 내부',
+      error: err,
+      details: '인증번호 검증 중 서버 예외'
+    });
     return res.status(500).json({ success: false, verified: false, error: '인증번호 검증 중 오류가 발생했습니다.' });
   }
 });
@@ -498,18 +979,43 @@ router.post('/password-reset', async (req, res) => {
 
     const isValidCode = entry && (entry.verified || entry.code === cleanCode);
     if (!isValidCode) {
+      recordEmailLog({
+        action: '비밀번호 재설정 확정',
+        loginId: cleanId,
+        status: 'FAIL',
+        provider: '로컬 캐시',
+        error: '미인증 상태',
+        details: '인증번호 검증 미완료 상태에서 재설정 시도'
+      });
       return res.status(400).json({ success: false, error: '인증번호 검증을 먼저 완료해주세요.' });
     }
 
     const newPasswordHash = crypto.createHash('sha256').update(String(newPassword)).digest('hex');
 
+    // 대소문자 무시하고 login_id 또는 email 업데이트
     const updateResult = await pool.query(`
       UPDATE user_profiles 
       SET password_hash = $1, updated_at = CURRENT_TIMESTAMP
-      WHERE login_id = $2 OR email = $2;
-    `, [newPasswordHash, cleanId]);
+      WHERE LOWER(TRIM(login_id)) = $2 OR LOWER(TRIM(email)) = $2;
+    `, [newPasswordHash, cleanIdKey]);
 
     passwordResetCodes.delete(cleanIdKey);
+    if (entry.email) {
+      passwordResetCodes.delete(entry.email);
+    }
+    if (entry.loginId) {
+      passwordResetCodes.delete(entry.loginId.toLowerCase());
+    }
+
+    recordEmailLog({
+      action: '비밀번호 재설정 확정',
+      loginId: cleanId,
+      email: entry.email,
+      status: 'SUCCESS',
+      provider: 'AWS RDS DB',
+      details: `비밀번호 SHA-256 재설정 완료 (영향받은 레코드: ${updateResult.rowCount}건)`
+    });
+
     console.log(`✅ [비밀번호 재설정 완료] 아이디: ${cleanId}, 업데이트 행: ${updateResult.rowCount}`);
 
     return res.json({
@@ -518,6 +1024,14 @@ router.post('/password-reset', async (req, res) => {
     });
   } catch (err) {
     console.error('❌ [비밀번호 재설정 에러]:', err);
+    recordEmailLog({
+      action: '비밀번호 재설정 확정',
+      loginId: req.body?.loginId || '',
+      status: 'FAIL',
+      provider: '서버 내부',
+      error: err,
+      details: '새 비밀번호 DB 저장 중 서버 오류'
+    });
     return res.status(500).json({ success: false, error: '비밀번호 재설정 중 오류가 발생했습니다.' });
   }
 });

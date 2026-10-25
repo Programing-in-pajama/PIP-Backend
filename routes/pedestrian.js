@@ -725,7 +725,9 @@ const handleRecommend = async (req, res) => {
       }
 
       const hubShort = (startHub.name || '역곡역').split(' ')[0];
-      const trailShort = cand.title.split(' ')[0];
+      const cleanBaseTitle = cand.title.replace(/\s*\(\d+분\)/g, '').trim();
+      const dynamicTitle = `${cleanBaseTitle} (${durationMin}분)`;
+      const trailShort = cleanBaseTitle.split(' ')[0];
       const waypointsText = includeRestaurant && restaurantDTO
         ? `${hubShort} ➔ ${restaurantDTO.dot || '🟢'} ${restaurantDTO.name} ➔ ${trailShort} ➔ ${hubShort}`
         : `${hubShort} ➔ ${trailShort} ➔ ${hubShort}`;
@@ -735,7 +737,7 @@ const handleRecommend = async (req, res) => {
       courses.push({
         id: `${regionId}-${minutes}-${i}`,
         regionId,
-        title: cand.title,
+        title: dynamicTitle,
         durationMin,
         distanceKm,
         hasRestaurant: Boolean(includeRestaurant && restaurantDTO),
