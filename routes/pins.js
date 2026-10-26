@@ -109,14 +109,19 @@ router.get('/folders', async (req, res) => {
           // ignore
         }
 
+        const durationMin = Number(r.duration_minutes) || 25;
+        const rawTitle = String(r.title || '산책 코스');
+        const cleanTitle = rawTitle.replace(/\s*[\(\（]\s*\d+\s*분\s*[\)\）]/g, '').trim();
+        const synchronizedTitle = `${cleanTitle} (${durationMin}분)`;
+
         return {
           id: r.id,
-          title: r.title,
+          title: synchronizedTitle,
           folderId: folderRow.id,
           startPoint: { name: r.start_place_name, lat: r.start_lat, lng: r.start_lng },
           destPoint: { name: r.dest_place_name, lat: r.dest_lat, lng: r.dest_lng },
           hasRestaurant: r.has_restaurant,
-          durationMin: r.duration_minutes,
+          durationMin,
           distanceKm: Number((r.distance_meters / 1000).toFixed(2)),
           roadType: r.has_restaurant ? '식당 포함 산책 코스' : '쾌적한 보행로',
           waypoints: `${r.start_place_name || '출발지'} → ${r.dest_place_name || '도착지'}`,
@@ -289,15 +294,17 @@ router.post('/routes', async (req, res) => {
     }
 
     const routeUuid = toUuid(route.id || crypto.randomUUID());
-    const title = route.title || '산책 코스';
-    const startName = route.startPoint?.name || route.title || '출발지';
+    const durationMin = Number(route.durationMin) || 25;
+    const rawTitle = String(route.title || '산책 코스');
+    const cleanTitle = rawTitle.replace(/\s*[\(\（]\s*\d+\s*분\s*[\)\）]/g, '').trim();
+    const title = `${cleanTitle} (${durationMin}분)`;
+    const startName = route.startPoint?.name || cleanTitle || '출발지';
     const startLat = route.startPoint?.lat || 37.4851;
     const startLng = route.startPoint?.lng || 126.8117;
-    const destName = route.destPoint?.name || route.title || '도착지';
+    const destName = route.destPoint?.name || cleanTitle || '도착지';
     const destLat = route.destPoint?.lat || 37.4851;
     const destLng = route.destPoint?.lng || 126.8117;
     const hasRestaurant = Boolean(route.hasRestaurant);
-    const durationMin = Number(route.durationMin) || 25;
     const distanceMeters = Math.round((Number(route.distanceKm) || 1.8) * 1000);
     const geojson = route.path ? JSON.stringify({ type: 'LineString', coordinates: route.path.map(p => [p.lng, p.lat]) }) : null;
 

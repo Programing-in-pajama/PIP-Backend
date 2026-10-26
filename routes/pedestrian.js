@@ -725,7 +725,7 @@ const handleRecommend = async (req, res) => {
       }
 
       const hubShort = (startHub.name || '역곡역').split(' ')[0];
-      const cleanBaseTitle = cand.title.replace(/\s*\(\d+분\)/g, '').trim();
+      const cleanBaseTitle = cand.title.replace(/\s*[\(\（]\s*\d+\s*분\s*[\)\）]/g, '').trim();
       const dynamicTitle = `${cleanBaseTitle} (${durationMin}분)`;
       const trailShort = cleanBaseTitle.split(' ')[0];
       const waypointsText = includeRestaurant && restaurantDTO
