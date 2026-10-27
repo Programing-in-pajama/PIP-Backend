@@ -395,6 +395,7 @@ router.delete('/folders/:folderId/routes/:routeId', async (req, res) => {
 
     const userUuid = await resolveUserUuid(rawUserId);
     const cleanTitle = title ? String(title).replace(/\s*[\(\（]\s*\d+\s*분\s*[\)\）]/g, '').trim() : '';
+    const routeUuid = routeId && routeId !== 'by-title' ? toUuid(routeId) : null;
 
     let delRes;
     if (routeUuid && cleanTitle) {
