@@ -19,7 +19,7 @@ function toUuid(id) {
 }
 
 // 사용자 실제 user_profiles ID(UUID) 조회 및 미존재 시 생성 헬퍼
-async function resolveUserUuid(rawUserId) {
+async function resolveUserUuid(rawUserId, autoCreate = false) {
   if (!rawUserId) return null;
   const cleanId = String(rawUserId).trim();
 
@@ -37,7 +37,12 @@ async function resolveUserUuid(rawUserId) {
   );
   if (byLogin.rows.length > 0) return byLogin.rows[0].id;
 
-  // 3. 외래 키 제약 조건 충족을 위해 기본 레코드 생성
+  // 단순 조회 요청(GET 등)이거나 autoCreate가 false인 경우 DB에 임의로 사용자 레코드를 생성하지 않음
+  if (!autoCreate) {
+    return null;
+  }
+
+  // 3. 외래 키 제약 조건 충족을 위해 기본 레코드 생성 (명시적 저장 요청 시에만 실행)
   const newUuid = toUuid(cleanId);
   try {
     await pool.query(`
@@ -65,7 +70,24 @@ router.get('/folders', async (req, res) => {
       return res.status(503).json({ success: false, error: '데이터베이스 연결이 설정되지 않았습니다.' });
     }
 
-    const userUuid = await resolveUserUuid(rawUserId);
+    const userUuid = await resolveUserUuid(rawUserId, false);
+
+    // 유저가 존재하지 않거나 삭제된 경우 DB에 임의 생성하지 않고 기본 빈 목록 반환
+    if (!userUuid) {
+      return res.json({
+        success: true,
+        folders: [
+          {
+            id: 'default',
+            name: '내 핀',
+            sortOrder: 0,
+            createdAt: new Date().toISOString(),
+            pins: [],
+            courses: []
+          }
+        ]
+      });
+    }
 
     // 폴더 목록 조회 (sort_order 및 created_at 순)
     let folderResult = await pool.query(`
@@ -162,7 +184,7 @@ router.post('/folders', async (req, res) => {
       return res.status(400).json({ success: false, error: '올바른 폴더 이름을 입력해주세요.' });
     }
 
-    const userUuid = await resolveUserUuid(rawUserId);
+    const userUuid = await resolveUserUuid(rawUserId, true);
 
     // 중복 폴더명 체크
     const dupCheck = await pool.query(
@@ -211,7 +233,10 @@ router.delete('/folders/:id', async (req, res) => {
       return res.status(400).json({ success: false, error: 'userId와 folderId 가 필요합니다.' });
     }
 
-    const userUuid = await resolveUserUuid(rawUserId);
+    const userUuid = await resolveUserUuid(rawUserId, false);
+    if (!userUuid) {
+      return res.status(404).json({ success: false, error: '존재하지 않는 사용자입니다.' });
+    }
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
     // UUID 일치 또는 폴더명 일치로 안전하게 조회 (타입 에러 방지)
@@ -259,7 +284,7 @@ router.post('/routes', async (req, res) => {
       return res.status(400).json({ success: false, error: 'userId와 route 정보가 필요합니다.' });
     }
 
-    const userUuid = await resolveUserUuid(rawUserId);
+    const userUuid = await resolveUserUuid(rawUserId, true);
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
     // 대상 폴더 확인 (지정되지 않거나 비-UUID 일 경우 이름 조회 또는 sort_order 0 기본 폴더)
@@ -393,7 +418,10 @@ router.delete('/folders/:folderId/routes/:routeId', async (req, res) => {
       return res.status(400).json({ success: false, error: 'userId 가 필요합니다.' });
     }
 
-    const userUuid = await resolveUserUuid(rawUserId);
+    const userUuid = await resolveUserUuid(rawUserId, false);
+    if (!userUuid) {
+      return res.status(404).json({ success: false, error: '존재하지 않는 사용자입니다.' });
+    }
     const cleanTitle = title ? String(title).replace(/\s*[\(\（]\s*\d+\s*분\s*[\)\）]/g, '').trim() : '';
     const routeUuid = routeId && routeId !== 'by-title' ? toUuid(routeId) : null;
 
@@ -442,7 +470,10 @@ router.put('/folders/:folderId/routes/reorder', async (req, res) => {
       return res.status(400).json({ success: false, error: 'userId와 routeIds 배열이 필요합니다.' });
     }
 
-    const userUuid = await resolveUserUuid(rawUserId);
+    const userUuid = await resolveUserUuid(rawUserId, false);
+    if (!userUuid) {
+      return res.status(404).json({ success: false, error: '존재하지 않는 사용자입니다.' });
+    }
 
     for (let index = 0; index < routeIds.length; index++) {
       const rId = toUuid(routeIds[index]);
