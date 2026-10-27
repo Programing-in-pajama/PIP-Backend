@@ -233,23 +233,27 @@ router.delete('/folders/:id', async (req, res) => {
       return res.status(400).json({ success: false, error: 'userId와 folderId 가 필요합니다.' });
     }
 
-    const userUuid = await resolveUserUuid(rawUserId, false);
-    if (!userUuid) {
+    const cleanId = String(rawUserId).trim();
+    const userUuid = await resolveUserUuid(cleanId, false);
+    const hashUuid = toUuid(cleanId);
+    const candidateUserIds = Array.from(new Set([userUuid, hashUuid].filter(Boolean)));
+    if (candidateUserIds.length === 0) {
       return res.status(404).json({ success: false, error: '존재하지 않는 사용자입니다.' });
     }
+
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
     // UUID 일치 또는 폴더명 일치로 안전하게 조회 (타입 에러 방지)
     let checkFolder;
     if (uuidRegex.test(folderId)) {
       checkFolder = await pool.query(
-        'SELECT id, folder_name, sort_order FROM pin_folders WHERE id = $1 AND user_id = $2',
-        [folderId, userUuid]
+        'SELECT id, folder_name, sort_order FROM pin_folders WHERE id = $1 AND user_id = ANY($2::uuid[])',
+        [folderId, candidateUserIds]
       );
     } else {
       checkFolder = await pool.query(
-        'SELECT id, folder_name, sort_order FROM pin_folders WHERE folder_name = $1 AND user_id = $2',
-        [folderId, userUuid]
+        'SELECT id, folder_name, sort_order FROM pin_folders WHERE folder_name = $1 AND user_id = ANY($2::uuid[])',
+        [folderId, candidateUserIds]
       );
     }
 
@@ -262,13 +266,19 @@ router.delete('/folders/:id', async (req, res) => {
       return res.status(400).json({ success: false, error: '기본 폴더는 삭제할 수 없습니다.' });
     }
 
-    // 연관된 saved_routes 삭제
-    await pool.query('DELETE FROM saved_routes WHERE folder_id = $1 AND user_id = $2', [targetRow.id, userUuid]);
+    // 연관된 saved_routes 삭제 (외래키 CASCADE 와 별개로 즉시 영구 삭제 보장)
+    const delRoutesRes = await pool.query(
+      'DELETE FROM saved_routes WHERE folder_id = $1 AND user_id = ANY($2::uuid[])',
+      [targetRow.id, candidateUserIds]
+    );
     // 폴더 삭제
-    await pool.query('DELETE FROM pin_folders WHERE id = $1 AND user_id = $2', [targetRow.id, userUuid]);
+    const delFolderRes = await pool.query(
+      'DELETE FROM pin_folders WHERE id = $1 AND user_id = ANY($2::uuid[])',
+      [targetRow.id, candidateUserIds]
+    );
 
-    console.log(`✅ [핀 폴더 삭제 완료]: ${targetRow.folder_name} (${targetRow.id})`);
-    return res.json({ success: true, message: '폴더가 삭제되었습니다.' });
+    console.log(`✅ [핀 폴더 삭제 완료]: ${targetRow.folder_name} (${targetRow.id}), 함께 삭제된 코스: ${delRoutesRes.rowCount}개`);
+    return res.json({ success: true, message: '폴더가 삭제되었습니다.', deletedRoutes: delRoutesRes.rowCount });
   } catch (err) {
     console.error('❌ [DELETE /api/pins/folders 에러]:', err);
     return res.status(500).json({ success: false, error: '폴더 삭제 중 오류가 발생했습니다.' });
@@ -418,42 +428,59 @@ router.delete('/folders/:folderId/routes/:routeId', async (req, res) => {
       return res.status(400).json({ success: false, error: 'userId 가 필요합니다.' });
     }
 
-    const userUuid = await resolveUserUuid(rawUserId, false);
-    if (!userUuid) {
+    const cleanId = String(rawUserId).trim();
+    const userUuid = await resolveUserUuid(cleanId, false);
+    const hashUuid = toUuid(cleanId);
+    const candidateUserIds = Array.from(new Set([userUuid, hashUuid].filter(Boolean)));
+    if (candidateUserIds.length === 0) {
       return res.status(404).json({ success: false, error: '존재하지 않는 사용자입니다.' });
     }
-    const cleanTitle = title ? String(title).replace(/\s*[\(\（]\s*\d+\s*분\s*[\)\）]/g, '').trim() : '';
-    const routeUuid = routeId && routeId !== 'by-title' ? toUuid(routeId) : null;
 
-    let delRes;
-    if (routeUuid && cleanTitle) {
-      delRes = await pool.query(`
-        DELETE FROM saved_routes 
-        WHERE user_id = $1 AND (
-          id = $2::uuid OR 
+    const cleanTitle = title ? String(title).replace(/\s*[\(\（]\s*\d+\s*분\s*[\)\）]/g, '').trim() : '';
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+    const candidateRouteUuids = [];
+    if (routeId && routeId !== 'by-title') {
+      if (uuidRegex.test(routeId)) {
+        candidateRouteUuids.push(routeId);
+      }
+      candidateRouteUuids.push(toUuid(routeId));
+    }
+
+    // 1단계: UUID 또는 정확한/유사 코스 제목으로 우선 삭제
+    let delRes = await pool.query(`
+      DELETE FROM saved_routes 
+      WHERE user_id = ANY($1::uuid[]) AND (
+        ($2::uuid[] IS NOT NULL AND id = ANY($2::uuid[])) OR
+        ($3 <> '' AND (
           title = $3 OR 
           title LIKE $4 || '%' OR 
           title ILIKE '%' || $4 || '%'
-        );
-      `, [userUuid, routeUuid, title, cleanTitle]);
-    } else if (routeUuid) {
+        ))
+      );
+    `, [
+      candidateUserIds,
+      candidateRouteUuids.length > 0 ? candidateRouteUuids : null,
+      title || '',
+      cleanTitle || ''
+    ]);
+
+    // 2단계: 만약 1단계에서 0건 삭제되었고 routeId가 'by-title'이 아닌 경우
+    // 제목, 출발지/도착지 또는 route_geojson 내부 부분 일치로 추가 삭제 시도
+    if (delRes.rowCount === 0 && routeId && routeId !== 'by-title') {
       delRes = await pool.query(`
         DELETE FROM saved_routes 
-        WHERE user_id = $1 AND id = $2::uuid;
-      `, [userUuid, routeUuid]);
-    } else if (cleanTitle) {
-      delRes = await pool.query(`
-        DELETE FROM saved_routes 
-        WHERE user_id = $1 AND (
-          title = $2 OR 
-          title LIKE $3 || '%' OR 
-          title ILIKE '%' || $3 || '%'
+        WHERE user_id = ANY($1::uuid[]) AND (
+          title ILIKE '%' || $2 || '%' OR
+          start_place_name ILIKE '%' || $2 || '%' OR
+          dest_place_name ILIKE '%' || $2 || '%' OR
+          route_geojson ILIKE '%' || $2 || '%'
         );
-      `, [userUuid, title, cleanTitle]);
+      `, [candidateUserIds, routeId]);
     }
 
-    console.log(`✅ [핀 삭제 완료]: routeId ${routeId}, title: ${title}, deletedRows: ${delRes?.rowCount || 0}`);
-    return res.json({ success: true, message: '핀이 삭제되었습니다.', deletedCount: delRes?.rowCount || 0 });
+    console.log(`✅ [핀 삭제 완료]: routeId: ${routeId}, title: ${title}, deletedRows: ${delRes.rowCount}`);
+    return res.json({ success: true, message: '핀이 삭제되었습니다.', deletedCount: delRes.rowCount });
   } catch (err) {
     console.error('❌ [DELETE /api/pins/.../routes 에러]:', err);
     return res.status(500).json({ success: false, error: '핀 삭제 중 오류가 발생했습니다.' });
