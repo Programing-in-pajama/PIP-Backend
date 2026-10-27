@@ -1,95 +1,147 @@
-# SOYO 백엔드 (program-in-pazama)
+# SOYO 백엔드 (PIP-Backend)
 
-Node.js + Express API 서버입니다. 프론트엔드: [programing-in-pajama](https://github.com/philip0613/programing-in-pazama)
+맞춤형 식이 및 산책 코스 추천 웰니스 플랫폼 **소요(SOYO)**의 RESTful API 서버 레포지토리입니다.  
+Node.js와 Express 기반으로 구축되었으며, PostgreSQL 데이터베이스, Supabase Auth, 식품의약품안전처 DUR 및 식품 영양성분 DB, 보행자 라우팅 엔진 연동을 제공합니다.
 
-> 🐣 **Git/GitHub 이 처음이라면 → [초보자 가이드](docs/GUIDE.md) 부터 보세요!** (명령어 없이 버튼으로만)
-
----
-
-## 🚀 개발 및 구현 진행 상황 (2026-10-24 최신)
-
-### ✅ 마이페이지 회원정보 및 기저질환 DB(Supabase) 실시간 저장·업데이트 연동 완료
-1. **프로필 저장/수정 API 호환성 보강 (`routes/auth.js`, `routes/user.js`)**:
-   - `POST /api/auth/profile` 및 `PUT /api/user/profile`에서 클라이언트 요청 파라미터 유연화:
-     - 이름(`name` / `userName`), 생년월일(`birth` / `birthDate`), 기저질환(`diseaseIds` / `chronicConditions`) 양방향 호환 지원
-   - PostgreSQL `ON CONFLICT (id) DO UPDATE` 쿼리를 통해 마이페이지에서 정보 수정 시 Supabase `user_profiles` 테이블의 기존 레코드를 즉각 갱신(`updated_at` 타임스탬프 동기화).
-2. **프로필 조회 API 최적화 (`routes/auth.js`, `routes/user.js`)**:
-   - `GET /api/auth/profile/:userId` 및 `GET /api/user/profile`: DB에서 최신 회원정보, 기저질환 배열, 복용 약물 정보를 조회하여 프론트엔드로 전달.
-3. **실제 Supabase DB 실시간 연동 테스트 및 무결성 검증**:
-   - 마이페이지 이름 수정(`박지원` ↔ `박지우`) 및 기저질환 다중 선택/초기화 시 Supabase `user_profiles`에 실시간으로 오차 없이 동기화됨을 확인.
-
-### ✅ 네이버 소셜 로그인 및 데이터베이스(Supabase) 연동 완료
-1. **OAuth 2.0 Authorization Code Flow 백엔드 파이프라인 완성**:
-   - `POST /api/auth/naver`: 인가코드(`code`) 및 `state` 수신 ➔ 네이버 토큰 서버 통신 ➔ 네이버 프로필 API(`https://openapi.naver.com/v1/nid/me`) 조회
-   - 자체 서비스 HMAC-SHA256 JWT 발급 (`lib/jwt.js`, 유효기간 7일)
-2. **PostgreSQL / Supabase DB 연동 및 자동 스키마 마이그레이션 (`lib/db.js`)**:
-   - Supabase 커넥션 풀러(Pooler, 6543 포트) 연결 완료
-   - `user_profiles` 테이블: `id (UUID)`, `email`, `provider='naver'`, `provider_id`, `user_name`, `birth_date`, `age`, `chronic_conditions`, `allergies` 등 영구 저장
-   - `user_medications` 테이블: 유저별 복용 약물(외래키 CASCADE) 연계 저장 지원
-   - 신규 가입자(`isNewUser = true`) 및 기존 가입자(`isNewUser = false`) 자동 판별 로직 적용
-3. **이중 인증 미들웨어 (`middleware/auth.js`)**:
-   - 서비스 자체 JWT 토큰과 Supabase Access Token을 동시에 해석하는 Fallback 인증 체계 구축
-4. **API 명세 및 테스트 시나리오 최신화**:
-   - [docs/API.md](docs/API.md): 네이버 소셜 로그인 요청/응답 규격 정리
-   - [api-test.http](api-test.http): 400 Bad Request 예외 및 인가코드 교환 테스트 케이스 추가
+- 프론트엔드 레포지토리: https://github.com/Programing-in-pajama/PIP-Frontend
+- 프론트엔드 배포 서비스: https://main.d3p7uoybais0cu.amplifyapp.com/
+- 기본 서비스 포트: 8080
 
 ---
 
-## 처음 실행하기
-**가장 쉬운 방법:** 폴더 안의 `실행하기.bat` 더블클릭 (맥은 `맥용/실행하기.command`). 설치부터 실행까지 자동으로 해줘요.
+## 1. 기술 스택
 
-| 더블클릭 파일 | 하는 일 |
-|---|---|
-| `작업시작.bat` | 최신 코드 받기 + 내 작업 공간(브랜치) 만들기 |
-| `실행하기.bat` | 설치 + 개발 서버 실행 |
-| `올리기.bat` | 저장(commit) + 올리기(push) + PR 페이지 열기 |
-| `최신받기.bat` | 친구들이 합친 최신 코드 받기 |
+| 구분 | 기술 및 라이브러리 | 설명 |
+|---|---|---|
+| Runtime / Framework | Node.js (v20+), Express 4 | 비동기 이벤트 기반 RESTful API 서버 구축 |
+| Database | PostgreSQL 15, AWS RDS / Supabase | 사용자 계정, 프로필, 복약 정보 및 핀 영구 보관 (`pg` 커넥션 풀링) |
+| Authentication | Supabase Auth, HMAC-SHA256 JWT | 이메일/비밀번호 인증, 소셜 OAuth 연동 및 JWT 이중 검증 |
+| Mail Service | Nodemailer | 회원가입 및 계정 찾기용 6자리 인증코드 SMTP 전송 |
+| Routing / Geo API | OSRM, Tmap Pedestrian Route API | 실보행 보행자 전용 도로망 폴리라인 생성 및 도보 소요 시간 연산 |
+| External Healthcare Data | 식약처 DUR API, 식품 영양성분 DB | 약물 성분 중복 검사, 안심식당 메뉴 영양 평가 (3색 안심 신호등) |
 
-(실제 동작은 `scripts/team.cjs` — 프론트/백엔드 레포에 같은 파일이 있으니 고칠 땐 양쪽 다)
+---
 
-터미널로 직접 하려면 (Node.js 20 이상 필요):
+## 2. 주요 기능 및 API 명세
 
+### 2.1 인증 및 계정 관리 (`/api/auth`)
+- `POST /api/auth/signup`: 신규 회원가입 및 초기 계정 생성
+- `POST /api/auth/login`: 아이디/비밀번호 검증 및 서비스 JWT 토큰 발급
+- `POST /api/auth/send-verification`: 이메일 인증번호(6자리) 발송
+- `POST /api/auth/verify-code`: 전송된 이메일 인증번호 일치 확인
+- `POST /api/auth/find-id`: 가입 이메일 기반 아이디 확인
+- `POST /api/auth/reset-password`: 본인 확인 후 비밀번호 재설정
+- `POST /api/auth/kakao`, `POST /api/auth/google`: OAuth 인가 코드를 통한 소셜 로그인 세션 동기화
+
+### 2.2 사용자 프로필 및 건강 정보 (`/api/user`)
+- `GET /api/user/profile`: 사용자 이름, 생년월일, 알레르기, 기저질환, 복용 약물 목록 조회
+- `PUT /api/user/profile`: 회원정보 및 만성질환 선택 내역 수정 (`ON CONFLICT DO UPDATE`)
+- `POST /api/user/profile`: 최초 온보딩 건강 프로필 등록
+
+### 2.3 복용 약물 및 식약처 DUR 연계 (`/api/medications`)
+- `GET /api/medications/search`: 식약처 의약품 DB 기반 약물명 자동완성 및 주의사항 조회
+- `POST /api/medications`: 사용자 복용 약물 등록
+- `POST /api/medications/check-duplicate`: 등록 약물 간 동일 성분 중복 복용 위험도 분석
+
+### 2.4 추천 산책로 및 보행 내비게이션 (`/api/routes`)
+- `POST /api/routes/recommend`: 사용자 현재 위치, 목표 시간(10/25/60분), 식당 포함 여부, 질환 코드를 결합한 맞춤 코스 추천
+- `POST /api/routes/pedestrian-path`: 출발지-경유 식당-도착지 간 실보행 도로망 고밀도 폴리라인 생성
+- `POST /api/routes/walk-record`: 산책 완보 후 실제 이동 거리, 소요 시간, 체감 난이도 기록 저장
+
+### 2.5 안심 식당 영양 분석 (`/api/nutrition`)
+- `GET /api/nutrition/restaurant/:id`: 코스 경유 식당의 대표 메뉴 및 식품 영양성분(칼로리, 당류, 나트륨) 조회
+- `POST /api/nutrition/evaluate`: 사용자 기저질환(당뇨, 고혈압 등) 임계치 기반 3색 안심 신호등 판정
+
+### 2.6 핀 보관함 및 폴더 관리 (`/api/pins`)
+- `GET /api/pins/folders`: 사용자별 핀 보관함 폴더 목록 조회
+- `POST /api/pins/folders`: 새 핀 보관함 폴더 생성
+- `DELETE /api/pins/folders/:id`: 보관함 폴더 및 하위 핀 삭제
+- `GET /api/pins`: 특정 폴더 또는 전체 저장 핀 목록 조회
+- `POST /api/pins`: 추천 코스를 지정 폴더에 북마크 저장
+- `DELETE /api/pins/:id`: 개별 핀 저장 해제
+
+---
+
+## 3. 디렉터리 구조
+
+```
+PIP-Backend/
+  docs/
+    API.md              통합 REST API 상세 규격서
+    GUIDE.md            협업 가이드 및 개발 안내
+  lib/
+    db.js               PostgreSQL 풀 및 스키마 Auto-Migration
+    jwt.js              자체 HMAC-SHA256 JWT 서명 및 검증 모듈
+    mail.js             Nodemailer SMTP 이메일 발송 유틸
+  middleware/
+    auth.js             authenticateToken (서비스 JWT & Supabase 토큰 이중 검증)
+    validator.js        요청 데이터 유효성 검사 미들웨어
+  routes/
+    auth.js             인증, 소셜 로그인, 비밀번호 찾기 라우터
+    medications.js      의약품 검색 및 DUR 성분 중복 분석 라우터
+    nutrition.js        식품 영양성분 평가 라우터
+    pedestrian.js       보행자 경로 엔진 및 맞춤 코스 추천 라우터
+    pins.js             핀 보관함 및 폴더 관리 라우터
+    posts.js            게시글 API 라우터
+    test.js             서버 연결 헬스체크 라우터 (/api/test)
+    user.js             회원 프로필 및 건강정보 동기화 라우터
+  api-test.http         VS Code REST Client 전용 API 호출 테스트 파일
+  index.js              Express 진입점 및 전역 미들웨어 설정
+  package.json          의존성 및 실행 스크립트 정의
+```
+
+---
+
+## 4. 로컬 개발 환경 설정
+
+### 4.1 요구 사항
+- Node.js 20.0.0 이상
+- npm 9.0.0 이상
+- PostgreSQL 15+ 또는 Supabase/AWS RDS 데이터베이스
+
+### 4.2 설치 및 실행
 ```bash
-git clone https://github.com/philip0613/program-in-pazama.git
-cd program-in-pazama
+# 1. 레포지토리 클론
+git clone https://github.com/Programing-in-pajama/PIP-Backend.git
+cd PIP-Backend
+
+# 2. 패키지 설치
 npm install
-cp .env.example .env      # Windows PowerShell: copy .env.example .env
+
+# 3. 환경 변수 설정
+cp .env.example .env
+
+# 4. 개발 서버 실행
 npm run dev
 ```
 
-브라우저에서 http://localhost:8080/api/test 를 열어 `"status":"ok"` 가 보이면 성공입니다.
+서버 구동 후 브라우저 또는 터미널에서 `http://localhost:8080/api/test` 접속 시 `{"status":"ok"}` 응답이 반환되면 정상 구동된 것입니다.
 
-> `.env` 의 DB/Supabase 값은 팀 단톡방 공지에서 받으세요. **비워둬도 서버는 켜지고**, DB가 필요한 API만 503을 돌려줍니다.
-> `.env` 는 절대 커밋하지 마세요 (이미 `.gitignore` 에 들어 있어요).
+---
 
-## 폴더 구조
-```
-index.js              서버 설정 + 라우트 등록 (여기는 거의 건드릴 일 없음)
-routes/               ★ 기능별 API — 대부분의 작업은 여기서
-  auth.js               POST /api/auth/naver, POST /api/auth/profile 등 인증/프로필
-  test.js               GET /api/test
-  posts.js              GET·POST /api/posts
-middleware/           요청 전에 실행되는 검사 (로그인 확인 등)
-  auth.js               authenticateToken (JWT & Supabase 이중 검증)
-lib/                  DB, Supabase, JWT 서명 유틸
-  db.js                 PostgreSQL Pool 및 스키마 Auto-Migration
-  jwt.js                자체 HMAC-SHA256 JWT 서명/검증
-docs/API.md           ★ API 명세 (프론트와의 약속)
+## 5. 환경 변수 (.env) 설정 가이드
+
+```env
+PORT=8080
+DATABASE_URL=postgresql://<username>:<password>@<host>:5432/<database>?sslmode=require
+JWT_SECRET=<your-jwt-secret>
+SUPABASE_URL=https://<your-project>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<your-service-role-key>
+EMAIL_USER=<your-smtp-email>
+EMAIL_PASS=<your-smtp-password>
+CORS_ORIGINS=https://main.d3p7uoybais0cu.amplifyapp.com,http://localhost:5173
 ```
 
-## API 테스트
-VS Code 에서 `api-test.http` 를 열고 요청 위의 **Send Request** 클릭 (REST Client 확장 필요 — 권장 확장으로 자동 안내됨). 자세한 방법은 [가이드 4번](docs/GUIDE.md#4--내가-만든-거-테스트하기).
+---
 
-## 새 API 추가하는 법
-1. `docs/API.md` 에 명세를 먼저 적고 단톡방에 공유
-2. `routes/` 에 파일 생성 (예: `routes/comments.js`, `routes/posts.js` 참고)
-3. `index.js` 에 한 줄 추가: `app.use('/api/comments', require('./routes/comments'));`
-4. 로그인이 필요하면 `authenticateToken` 미들웨어를 붙이면 `req.user` 를 쓸 수 있음
-5. `api-test.http` 에 테스트 요청 추가
+## 6. API 테스트 가이드
 
-## 협업 규칙
-1. `main` 에서 바로 작업하지 말고 `작업시작.bat` 으로 작업 공간 만들기
-2. 작업이 끝나면 `올리기.bat` → PR 만들고 **다른 친구 1명이 확인한 뒤** 합치기
-3. API를 바꾸고 싶으면 먼저 `docs/API.md` 수정 + 단톡방에 알리기
+VS Code의 **REST Client** 확장을 설치한 후, 루트 디렉터리의 `api-test.http` 파일을 열어 각 엔드포인트 상단의 `Send Request` 링크를 클릭하면 실서버 또는 로컬 서버로 요청을 즉시 테스트할 수 있습니다.
 
-> ⚠️ `main` 에 합쳐지면 **Render 실서버에 자동 배포**됩니다.
+---
+
+## 7. 협업 및 기여 가이드라인
+
+1. **브랜치 전략**: `main` 브랜치에 직접 푸시하지 않고, 작업 단위별 브랜치(`feat/기능명`, `fix/버그명`)를 생성하여 작업 후 PR을 통해 병합합니다.
+2. **데이터베이스 무결성**: DDL(테이블 생성/수정/삭제) 작업이 필요한 경우, 사전에 팀과 스키마 변경 사항을 공유하고 승인을 거칩니다.
+3. **API 명세 동기화**: 프론트엔드 연동 필드 규약이 변경될 경우 `docs/API.md` 문서를 먼저 갱신하고 프론트엔드 팀과 동기화합니다.
