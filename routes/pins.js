@@ -30,9 +30,9 @@ async function resolveUserUuid(rawUserId) {
     if (res.rows.length > 0) return res.rows[0].id;
   }
 
-  // 2. login_id 또는 email 로 조회
+  // 2. login_id 또는 email 로 조회 (대소문자 무관 안전 조회)
   const byLogin = await pool.query(
-    'SELECT id FROM user_profiles WHERE login_id = $1 OR email = $1 ORDER BY updated_at DESC LIMIT 1',
+    'SELECT id FROM user_profiles WHERE LOWER(login_id) = LOWER($1) OR LOWER(email) = LOWER($1) ORDER BY updated_at DESC LIMIT 1',
     [cleanId]
   );
   if (byLogin.rows.length > 0) return byLogin.rows[0].id;
@@ -126,6 +126,7 @@ router.get('/folders', async (req, res) => {
           roadType: r.has_restaurant ? '식당 포함 산책 코스' : '쾌적한 보행로',
           waypoints: `${r.start_place_name || '출발지'} → ${r.dest_place_name || '도착지'}`,
           path: geojson?.coordinates?.map(([lng, lat]) => ({ lat, lng })) || [],
+          geoPath: geojson?.coordinates?.map(([lng, lat]) => ({ lat, lng })) || [],
           savedAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString()
         };
       });
@@ -295,6 +296,9 @@ router.post('/routes', async (req, res) => {
 
     const routeUuid = toUuid(route.id || crypto.randomUUID());
     const durationMin = Number(route.durationMin) || 25;
+    const distanceMeters = Math.round(
+      Number(route.distanceMeters || (Number(route.distanceKm || route.distanceToStartKm || 0.8) * 1000))
+    );
     const rawTitle = String(route.title || '산책 코스');
     const cleanTitle = rawTitle.replace(/\s*[\(\（]\s*\d+\s*분\s*[\)\）]/g, '').trim();
     const title = `${cleanTitle} (${durationMin}분)`;
@@ -322,14 +326,27 @@ router.post('/routes', async (req, res) => {
     }
     const geojson = coordinates.length > 0 ? JSON.stringify({ type: 'LineString', coordinates }) : null;
 
-    // 이미 저장된 핀인지 확인
+    // 이미 저장된 핀인지 확인 (중복 시 기존 핀 정보 즉시 반환하여 멱등성 보장)
     const dupCheck = await pool.query(
       'SELECT id FROM saved_routes WHERE user_id = $1 AND (id = $2 OR title = $3)',
       [userUuid, routeUuid, title]
     );
 
     if (dupCheck.rows.length > 0) {
-      return res.status(409).json({ success: false, error: '이미 저장된 경로입니다.' });
+      console.log(`ℹ️ [핀(경로) 이미 존재]: ${title} (${dupCheck.rows[0].id})`);
+      return res.json({
+        success: true,
+        alreadySaved: true,
+        pin: {
+          id: dupCheck.rows[0].id,
+          folderId: targetFolderId,
+          title,
+          durationMin,
+          distanceKm: Number((distanceMeters / 1000).toFixed(2)),
+          hasRestaurant,
+          savedAt: new Date().toISOString()
+        }
+      });
     }
 
     await pool.query(`
