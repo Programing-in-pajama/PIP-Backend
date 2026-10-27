@@ -305,8 +305,22 @@ router.post('/routes', async (req, res) => {
     const destLat = route.destPoint?.lat || 37.4851;
     const destLng = route.destPoint?.lng || 126.8117;
     const hasRestaurant = Boolean(route.hasRestaurant);
-    const distanceMeters = Math.round((Number(route.distanceKm) || 1.8) * 1000);
-    const geojson = route.path ? JSON.stringify({ type: 'LineString', coordinates: route.path.map(p => [p.lng, p.lat]) }) : null;
+    let coordinates = [];
+    if (Array.isArray(route.geoPath) && route.geoPath.length > 0) {
+      coordinates = route.geoPath.map((p) => [Number(p.lng), Number(p.lat)]);
+    } else if (Array.isArray(route.path) && route.path.length > 0) {
+      const first = route.path[0];
+      if (first && typeof first.lat === 'number') {
+        coordinates = route.path.map((p) => [Number(p.lng), Number(p.lat)]);
+      } else if (Array.isArray(first) && first.length === 2) {
+        if (first[0] > 100) {
+          coordinates = route.path;
+        } else if (first[1] > 100) {
+          coordinates = route.path.map(([lat, lng]) => [lng, lat]);
+        }
+      }
+    }
+    const geojson = coordinates.length > 0 ? JSON.stringify({ type: 'LineString', coordinates }) : null;
 
     // 이미 저장된 핀인지 확인
     const dupCheck = await pool.query(
